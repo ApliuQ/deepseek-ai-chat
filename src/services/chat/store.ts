@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { createId } from '../../utils/id.js'
 import { ApiError, streamMessage } from '../api/client.js'
+import { buildOpenaiRequest, generateOpenaiTitle, streamOpenaiMessage } from '../api/openai.js'
 import type { ChatModel, CreateMessageRequest } from '../api/types.js'
 import { extractFileIds, getFileErrorCode, isRetryableApiError } from '../api/errors.js'
 import {
@@ -10,7 +11,7 @@ import {
   uploadAttachment,
   useUploads,
 } from '../attachments.js'
-import { useSettings } from '../settings.js'
+import { getApiProvider, getOpenaiRoot, useSettings } from '../settings.js'
 import { appendBranch, getVisibleMessages, normalizeSession, selectVersion } from './branches.js'
 import * as db from './db.js'
 import {
@@ -25,6 +26,7 @@ import {
   applyEvent,
   canContinueReply,
   getContextRounds,
+  getReplyText,
   settleReply,
   toRequestMessages,
 } from './reply.js'
@@ -791,11 +793,11 @@ const saveServerIds = (sessionId: string, serverIds: ReadonlyMap<string, string 
  * 本地也没有原件（导入的文档附件只有元数据）时返回 null，该附件只展示、不进入请求。
  */
 const ensureServerId = async (apiKey: string, file: FileAttachment): Promise<string | null> => {
-  if (file.serverId) {
+  if (file.serverId && !file.serverId.startsWith('local:')) {
     return file.serverId
   }
   const task = useUploads.getState().tasks[file.id]
-  if (task?.status === 'done') {
+  if (task?.status === 'done' && !task.serverId.startsWith('local:')) {
     return task.serverId
   }
   const blob = await db.loadFile(file.id)
@@ -844,6 +846,11 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
     ...getContextRounds(request.history).flatMap(([user]) => user.files),
   ]
   const checked = await Promise.race([checkImageFileIds(files, signal), aborted])
+  for (const file of files) {
+    if (file.serverId?.startsWith('local:')) {
+      checked.set(file.id, null)
+    }
+  }
   if (checked.size > 0) {
     saveServerIds(sessionId, checked)
     request = refreshRequest(sessionId, request)
@@ -870,7 +877,11 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
   const pending = new Map<string, FileAttachment>()
   for (const [user] of getContextRounds(request.history).toReversed()) {
     for (const file of user.files) {
-      if (!file.serverId && !serverIds.has(file.id) && !pending.has(file.id)) {
+      if (
+        (!file.serverId || file.serverId.startsWith('local:')) &&
+        !serverIds.has(file.id) &&
+        !pending.has(file.id)
+      ) {
         pending.set(file.id, file)
       }
     }
@@ -985,6 +996,9 @@ const waitForRetry = (attempt: number, signal: AbortSignal) =>
  */
 const streamReply = async (sessionId: string, initial: AssistantMessage, request: Request) => {
   const controller = new AbortController()
+  const connection = useSettings.getState()
+  const openai = getApiProvider(connection.baseUrl) === 'openai'
+  const openaiRoot = getOpenaiRoot(connection.baseUrl)
   if (!getSession(sessionId)?.title) {
     titleRequests.add(controller)
   }
@@ -1004,7 +1018,29 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
       let preparing = true
       let receivedContent = false
       try {
-        const prepared = await prepareFiles(sessionId, request, controller.signal)
+        const prepared = openai
+          ? {
+              ...request,
+              history: request.history.map((message) =>
+                message.role === 'user'
+                  ? {
+                      ...message,
+                      files: message.files.map((file) => ({
+                        ...file,
+                        serverId: `local:${file.id}`,
+                      })),
+                    }
+                  : message
+              ),
+              question: {
+                ...request.question,
+                files: request.question.files.map((file) => ({
+                  ...file,
+                  serverId: `local:${file.id}`,
+                })),
+              },
+            }
+          : await prepareFiles(sessionId, request, controller.signal)
         preparing = false
         // 附件就绪后获取本轮信息；续写沿用原回答快照，重新生成的快照独立保存。
         const latestReminder = prepared.prefix
@@ -1020,19 +1056,47 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           initial.thinking ?? false,
           latestReminder
         )
-        const events = streamMessage(
-          useSettings.getState().apiKey ?? '',
-          {
-            model: initial.model ?? MODEL,
-            system: SYSTEM_PROMPT,
-            messages,
-            thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
-            safety_check: SAFETY_CHECK,
-            tools: serverTools(initial.search ?? false),
-            ...(titleRequests.has(controller) ? { title: { enabled: true } } : {}),
-          },
-          controller.signal
+        const localFiles = [prepared.question, ...prepared.history].flatMap((message) =>
+          message.role === 'user' ? message.files : []
         )
+        const events = openai
+          ? streamOpenaiMessage(
+              openaiRoot,
+              connection.apiKey ?? '',
+              await buildOpenaiRequest(
+                messages,
+                connection.openaiModel,
+                initial.thinking ?? false,
+                initial.search ?? false,
+                async (id) => {
+                  const file = localFiles.find((item) => `local:${item.id}` === id)
+                  if (!file) {
+                    return undefined
+                  }
+                  const blob =
+                    pendingFiles.get(sessionId)?.find((item) => item.id === file.id)?.blob ??
+                    (await db.loadFile(file.id))
+                  return blob
+                    ? { blob, name: file.name, isImage: file.isImage, mimeType: file.mimeType }
+                    : undefined
+                },
+                controller.signal
+              ),
+              controller.signal
+            )
+          : streamMessage(
+              useSettings.getState().apiKey ?? '',
+              {
+                model: initial.model ?? MODEL,
+                system: SYSTEM_PROMPT,
+                messages,
+                thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
+                safety_check: SAFETY_CHECK,
+                tools: serverTools(initial.search ?? false),
+                ...(titleRequests.has(controller) ? { title: { enabled: true } } : {}),
+              },
+              controller.signal
+            )
         const blockIndexes = new Map<number, number>()
         for await (const event of events) {
           receivedContent ||= event.type === 'content_block_start'
@@ -1056,6 +1120,32 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           }
         }
         reply = settleReply(reply, 'done', Date.now())
+        if (openai && titleRequests.has(controller) && reply.stopReason !== 'refusal') {
+          flush()
+          try {
+            const title = await generateOpenaiTitle(
+              openaiRoot,
+              connection.apiKey ?? '',
+              connection.openaiModel,
+              prepared.question.content,
+              getReplyText(reply),
+              controller.signal
+            )
+            if (
+              title &&
+              titleRequests.has(controller) &&
+              !controller.signal.aborted &&
+              !get().importingHistory
+            ) {
+              updateSession(sessionId, (session) =>
+                session.title ? session : { ...session, title }
+              )
+              titleRequests.delete(controller)
+            }
+          } catch {
+            // 标题失败不影响已完成的回答
+          }
+        }
         break
       } catch (error) {
         if (controller.signal.aborted) {

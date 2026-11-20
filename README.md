@@ -35,6 +35,14 @@ The output is written to `dist/`. Deploy it to a static web server or open `dist
 - Markdown, syntax highlighting, KaTeX math, and Mermaid diagrams.
 - Simplified Chinese and English, light and dark themes, mobile layouts, location settings, and chat history import and export.
 
+## Base URL, OpenAI compatibility and embedding
+
+In Settings → Data, edit the Base URL and API key together and confirm to verify and save them. The default is `https://api.deepseek.com`, using the original DeepSeek APIs. Other URLs enable OpenAI-compatible mode (for example, NewAPI); `/v1` is appended unless the URL already ends in a version segment. Verification requires a JSON `/models` list, and the Model selector lets you choose an available model.
+
+OpenAI mode supports streaming chat, thinking (`reasoning_effort`), automatic titles, inline images, UTF-8 text, and text extracted locally from DOCX, PPTX and PDF files. Legacy `.doc`/`.ppt` and files without extractable text are sent as standard `file` parts, which some upstreams ignore. Search only works if the upstream implements `web_search_options`; DeepSeek server-side search/link-reading tools are not emulated. Speech requires access to `whisper-1` and `tts-1` (voices map to nova/onyx).
+
+To embed, use an iframe pointing to the app. With no saved connection, the default becomes the embedding parent's origin plus `/v1` (using `ancestorOrigins`, or the referrer when available). `?baseUrl=https%3A%2F%2Fgateway.example%2Fv1` (also `base_url`) overrides uncached defaults, in direct or iframe mode. A previously verified, cached connection takes precedence on later visits. The API must permit browser CORS requests; parent-origin detection falls back to the build default when the browser/referrer policy hides it. Only embed the app in trusted parents and verify the destination before entering an API key.
+
 ## Data and storage
 
 Your API key and settings are stored in the browser's localStorage. Conversations and original attachments are stored in IndexedDB. Local data is isolated by browser profile and site origin. Sending messages, uploading attachments, and using speech features sends the relevant content to the configured API service.

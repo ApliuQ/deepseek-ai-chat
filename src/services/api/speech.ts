@@ -1,4 +1,5 @@
-import { ApiError, API_ORIGIN, request } from './client.js'
+import { ApiError, request } from './client.js'
+import { getApiOrigin, getApiProvider, getOpenaiRoot, useSettings } from '../settings.js'
 
 /**
  * 语音接口：
@@ -6,7 +7,7 @@ import { ApiError, API_ORIGIN, request } from './client.js'
  * - TTS：POST /v1/tools/tts，返回音频字节流（产出首帧后即返回 200）
  * 鉴权都用 Authorization: Bearer。
  */
-const TOOLS_BASE_URL = `${API_ORIGIN}/v1/tools`
+const toolsBaseUrl = () => `${getApiOrigin()}/v1/tools`
 
 export type TtsVoice = 'stella' | 'tide'
 
@@ -21,12 +22,20 @@ export const transcribe = async (
 ): Promise<string> => {
   const form = new FormData()
   form.append('file', audio, 'recording.wav')
-  const response = await request(`${TOOLS_BASE_URL}/asr`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}` },
-    body: form,
-    signal,
-  })
+  const { baseUrl } = useSettings.getState()
+  const openai = getApiProvider(baseUrl) === 'openai'
+  if (openai) {
+    form.append('model', 'whisper-1')
+  }
+  const response = await request(
+    openai ? `${getOpenaiRoot(baseUrl)}/audio/transcriptions` : `${toolsBaseUrl()}/asr`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+      signal,
+    }
+  )
   const raw = await response.text()
   let body: unknown
   try {
@@ -52,12 +61,26 @@ export const synthesize = async (
   voice: TtsVoice,
   signal: AbortSignal
 ): Promise<ReadableStream<Uint8Array>> => {
-  const response = await request(`${TOOLS_BASE_URL}/tts`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, voice_id: voice, format: 'pcm', filter_markdown: true }),
-    signal,
-  })
+  const { baseUrl } = useSettings.getState()
+  const openai = getApiProvider(baseUrl) === 'openai'
+  const response = await request(
+    openai ? `${getOpenaiRoot(baseUrl)}/audio/speech` : `${toolsBaseUrl()}/tts`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        openai
+          ? {
+              model: 'tts-1',
+              input: text,
+              voice: voice === 'stella' ? 'nova' : 'onyx',
+              response_format: 'pcm',
+            }
+          : { text, voice_id: voice, format: 'pcm', filter_markdown: true }
+      ),
+      signal,
+    }
+  )
   if (!response.body) {
     throw new ApiError('protocol', await response.text())
   }

@@ -10,6 +10,9 @@ export type ThemePreference = 'light' | 'dark' | 'system'
 /** 本机设置，存 localStorage：API Key、语言、主题、位置、朗读音色、深度思考与智能搜索开关、侧边栏收起状态 */
 type Settings = {
   apiKey: string | null
+  baseUrl: string
+  openaiModel: string
+  openaiModels: string[]
   locale: Locale
   themePreference: ThemePreference
   location: UserLocation | null
@@ -21,6 +24,8 @@ type Settings = {
 
 const KEYS = {
   apiKey: 'chat-demo:api-key',
+  baseUrl: 'chat-demo:base-url',
+  openaiModel: 'chat-demo:openai-model',
   locale: 'chat-demo:locale',
   location: 'chat-demo:location',
   themePreference: 'chat-demo:theme-preference',
@@ -87,8 +92,56 @@ const initialThemePreference = (): ThemePreference => {
 /** 未保存过时使用服务端默认音色 stella（海星） */
 const initialTtsVoice = (): TtsVoice => (read(KEYS.ttsVoice) === 'tide' ? 'tide' : 'stella')
 
+export const normalizeBaseUrl = (baseUrl: string): string => baseUrl.trim().replace(/\/+$/, '')
+
+export const getApiProvider = (baseUrl: string): 'deepseek' | 'openai' => {
+  const normalized = normalizeBaseUrl(baseUrl)
+  const origin = normalizeBaseUrl(__API_ORIGIN__)
+  return [origin, `${origin}/v1`, `${origin}/anthropic`].includes(normalized)
+    ? 'deepseek'
+    : 'openai'
+}
+
+export const getOpenaiRoot = (baseUrl: string): string => {
+  const normalized = normalizeBaseUrl(baseUrl)
+  return /\/v\d+(?:\.\d+)*$/.test(normalized) ? normalized : `${normalized}/v1`
+}
+
+export const getApiOrigin = (): string => {
+  const baseUrl = normalizeBaseUrl(useSettings.getState().baseUrl)
+  return getApiProvider(baseUrl) === 'deepseek' ? normalizeBaseUrl(__API_ORIGIN__) : baseUrl
+}
+
+const initialBaseUrl = (): string => {
+  const saved = read(KEYS.baseUrl)
+  if (saved) {
+    return saved
+  }
+  if (typeof window !== 'undefined') {
+    const params = new URLSearchParams(window.location.search)
+    const explicit = params.get('baseUrl') || params.get('base_url')
+    if (explicit?.trim()) {
+      return normalizeBaseUrl(explicit)
+    }
+    if (window.self !== window.top) {
+      try {
+        const parent = window.location.ancestorOrigins?.[0] || new URL(document.referrer).origin
+        if (parent && parent !== 'null') {
+          return getOpenaiRoot(parent)
+        }
+      } catch {
+        // 无法读取嵌入来源时使用构建默认值
+      }
+    }
+  }
+  return __API_ORIGIN__
+}
+
 export const useSettings = create<Settings>(() => ({
   apiKey: read(KEYS.apiKey),
+  baseUrl: initialBaseUrl(),
+  openaiModel: read(KEYS.openaiModel) ?? '',
+  openaiModels: [],
   locale: initialLocale(),
   location: initialLocation(),
   themePreference: initialThemePreference(),
@@ -122,6 +175,23 @@ export const setTtsVoice = (ttsVoice: TtsVoice) => {
 export const setApiKey = (apiKey: string | null) => {
   write(KEYS.apiKey, apiKey)
   useSettings.setState({ apiKey })
+}
+
+export const setConnection = (apiKey: string, baseUrl: string, models: string[]) => {
+  const normalized = normalizeBaseUrl(baseUrl)
+  const previous = useSettings.getState()
+  const openaiModel = models.includes(previous.openaiModel)
+    ? previous.openaiModel
+    : (models[0] ?? '')
+  write(KEYS.apiKey, apiKey)
+  write(KEYS.baseUrl, normalized)
+  write(KEYS.openaiModel, openaiModel)
+  useSettings.setState({ apiKey, baseUrl: normalized, openaiModel, openaiModels: models })
+}
+
+export const setOpenaiModel = (openaiModel: string) => {
+  write(KEYS.openaiModel, openaiModel)
+  useSettings.setState({ openaiModel })
 }
 
 export const setThinking = (thinking: boolean) => {

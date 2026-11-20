@@ -35,6 +35,14 @@ pnpm build
 - Markdown、代码高亮、KaTeX 公式和 Mermaid 图表。
 - 简体中文与英文、浅色与深色主题、移动端布局、位置设置、历史导入导出。
 
+## API 基础地址、OpenAI 兼容模式与嵌入
+
+在设置 → 数据管理中一起修改 API 基础地址和 API Key，确认校验成功后才会保存。默认地址是 `https://api.deepseek.com`，使用原有 DeepSeek 接口；其他地址启用 OpenAI 兼容模式（如 NewAPI）。地址末尾没有版本段时自动补 `/v1`。校验要求 `/models` 返回 JSON 模型列表，随后可在模型选择器中选择模型。
+
+OpenAI 模式支持流式对话、思考（`reasoning_effort`）、自动标题、内联图片、UTF-8 文本，以及在本地提取 DOCX、PPTX、PDF 文字。旧版 `.doc`/`.ppt` 或无法提取文字的附件按标准 `file` 部分发送，部分上游会忽略它们。搜索依赖上游实现 `web_search_options`，不会模拟 DeepSeek 服务端搜索或链接阅读工具。语音功能需要 `whisper-1` 和 `tts-1` 的访问权限，音色映射为 nova/onyx。
+
+可用 iframe 嵌入应用。没有缓存连接时，默认地址为嵌入父页面的 origin 加 `/v1`（优先 `ancestorOrigins`，否则尝试 referrer）。直连或嵌入时都可用 `?baseUrl=https%3A%2F%2Fgateway.example%2Fv1`（也支持 `base_url`）覆盖未缓存的默认值；之后访问优先复用已校验保存的连接。API 必须允许浏览器 CORS 请求；若浏览器或 referrer 策略隐藏父页面来源，则回退到构建默认地址。请仅在可信父页面中嵌入，并在输入 API Key 前确认目标地址。
+
 ## 数据
 
 API Key 和设置保存在浏览器 localStorage，会话及附件原件保存在 IndexedDB，本地数据按浏览器用户配置和站点源（origin）隔离。发送对话、上传附件和使用语音功能时，相应内容会提交给配置的 API 服务。

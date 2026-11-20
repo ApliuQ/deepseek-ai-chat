@@ -1,6 +1,11 @@
 import type { zh } from './zh.js'
 
 export const en = {
+  baseUrlLabel: 'Base URL',
+  baseUrlPlaceholder: 'https://api.deepseek.com',
+  baseUrlInvalid:
+    'Enter an HTTP or HTTPS base URL without credentials, query parameters or a fragment.',
+  openaiModelLabel: 'Model',
   welcomeMessageChat250808: 'How can I help you?',
   contentCaveat: 'AI-generated, for reference only',
   expandSiderbarButton: 'Open sidebar',

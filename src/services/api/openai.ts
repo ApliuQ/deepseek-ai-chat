@@ -1,0 +1,292 @@
+import { ApiError, request } from './client.js'
+import { readServerSentEvents } from './sse.js'
+import type { MessageParam, MessageStreamEvent, MessageUsage, StopReason } from './types.js'
+import { toOpenaiFileParts, type LocalFileLoader, type OpenaiPart } from './openaiAttachments.js'
+
+export type OpenaiMessage = {
+  role: 'system' | 'user' | 'assistant'
+  content: string | OpenaiPart[]
+}
+
+export type OpenaiRequest = {
+  model: string
+  messages: OpenaiMessage[]
+  stream: true
+  stream_options: { include_usage: true }
+  reasoning_effort?: 'high'
+  web_search_options?: Record<string, never>
+}
+
+export const buildOpenaiRequest = async (
+  messages: MessageParam[],
+  model: string,
+  thinking: boolean,
+  search: boolean,
+  loadFile: LocalFileLoader,
+  signal: AbortSignal
+): Promise<OpenaiRequest> => {
+  if (!model) {
+    throw new ApiError('protocol', 'Select a model in settings first')
+  }
+  const mapped: OpenaiMessage[] = [{ role: 'system', content: 'You are a helpful assistant.' }]
+  for (const message of messages) {
+    signal.throwIfAborted()
+    if (message.role === 'latest_reminder') {
+      mapped.push({ role: 'system', content: message.content })
+    } else if (message.role === 'assistant') {
+      const text = message.content
+        .flatMap((block) => (block.type === 'text' ? [block.text] : []))
+        .join('')
+      if (text) {
+        mapped.push({ role: 'assistant', content: text })
+      }
+    } else if (typeof message.content === 'string') {
+      mapped.push({ role: 'user', content: message.content })
+    } else {
+      const parts: OpenaiPart[] = []
+      for (const block of message.content) {
+        if (block.type === 'text') {
+          parts.push({ type: 'text', text: block.text })
+        } else {
+          const file = await loadFile(block.source.file_id)
+          if (file) {
+            parts.push(...(await toOpenaiFileParts(file, signal)))
+          }
+        }
+      }
+      mapped.push({
+        role: 'user',
+        content: parts.length ? parts : '[Attachment unavailable locally]',
+      })
+    }
+  }
+  if (mapped.at(-1)?.role === 'assistant') {
+    mapped.push({
+      role: 'user',
+      content: 'Continue your previous response from where it stopped. Do not repeat it.',
+    })
+  }
+  return {
+    model,
+    messages: mapped,
+    stream: true,
+    stream_options: { include_usage: true },
+    ...(thinking ? { reasoning_effort: 'high' as const } : {}),
+    ...(search ? { web_search_options: {} } : {}),
+  }
+}
+
+const record = (value: unknown): Record<string, unknown> | null =>
+  typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null
+
+const readUsage = (value: unknown): MessageUsage | undefined => {
+  const usage = record(value)
+  if (
+    !usage ||
+    typeof usage.prompt_tokens !== 'number' ||
+    typeof usage.completion_tokens !== 'number'
+  ) {
+    return undefined
+  }
+  const cached = record(usage.prompt_tokens_details)?.cached_tokens
+  const cacheRead = typeof cached === 'number' ? cached : 0
+  return {
+    input_tokens: Math.max(0, usage.prompt_tokens - cacheRead),
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: cacheRead,
+    output_tokens: usage.completion_tokens,
+  }
+}
+
+const stopReason = (reason: string): StopReason => {
+  switch (reason) {
+    case 'length':
+      return 'max_tokens'
+    case 'content_filter':
+      return 'refusal'
+    case 'tool_calls':
+    case 'function_call':
+      return 'tool_use'
+    default:
+      return 'end_turn'
+  }
+}
+
+export async function* openaiStreamEvents(
+  stream: ReadableStream<Uint8Array>,
+  model: string,
+  signal: AbortSignal
+): AsyncGenerator<MessageStreamEvent> {
+  let started = false
+  let index = -1
+  let active: 'text' | 'thinking' | null = null
+  let blockText = ''
+  let finish: StopReason | undefined
+  let usage: MessageUsage | undefined
+  for await (const frame of readServerSentEvents(stream, signal)) {
+    signal.throwIfAborted()
+    if (frame.data.trim() === '[DONE]') {
+      if (!started || !finish) {
+        throw new ApiError('protocol', 'Incomplete chat completion')
+      }
+      if (active) {
+        yield { type: 'content_block_stop', index }
+      }
+      yield { type: 'message_delta', delta: { stop_reason: finish, stop_sequence: null }, usage }
+      yield { type: 'message_stop' }
+      return
+    }
+    let chunk: Record<string, unknown> | null
+    try {
+      chunk = record(JSON.parse(frame.data))
+    } catch {
+      if (frame.event === 'error') {
+        throw new ApiError('stream', frame.data)
+      }
+      throw new ApiError('protocol', 'Invalid chat completion event')
+    }
+    const error = record(chunk?.error)
+    if (error || frame.event === 'error') {
+      throw new ApiError('stream', typeof error?.message === 'string' ? error.message : frame.data)
+    }
+    if (!chunk) {
+      throw new ApiError('protocol', 'Invalid chat completion event')
+    }
+    if (!started) {
+      started = true
+      yield {
+        type: 'message_start',
+        message: { id: typeof chunk.id === 'string' ? chunk.id : '', model },
+      }
+    }
+    usage = readUsage(chunk.usage) ?? usage
+    const choice = Array.isArray(chunk.choices) ? record(chunk.choices[0]) : null
+    if (!choice) {
+      continue
+    }
+    const delta = record(choice.delta)
+    const annotations = delta?.annotations
+    for (const type of ['thinking', 'text'] as const) {
+      const text = delta?.[type === 'thinking' ? 'reasoning_content' : 'content']
+      const citations = type === 'text' && Array.isArray(annotations) ? annotations : []
+      if (!(typeof text === 'string' && text) && !citations.length) {
+        continue
+      }
+      if (active !== type) {
+        if (active) {
+          yield { type: 'content_block_stop', index }
+        }
+        active = type
+        blockText = ''
+        index++
+        yield {
+          type: 'content_block_start',
+          index,
+          content_block:
+            type === 'thinking'
+              ? { type: 'thinking', thinking: '', signature: '' }
+              : { type: 'text', text: '' },
+        }
+      }
+      if (typeof text === 'string' && text) {
+        blockText += text
+        yield {
+          type: 'content_block_delta',
+          index,
+          delta:
+            type === 'thinking'
+              ? { type: 'thinking_delta', thinking: text }
+              : { type: 'text_delta', text },
+        }
+      }
+      for (const annotation of citations) {
+        const item = record(annotation)
+        const citation = record(item?.url_citation)
+        if (item?.type === 'url_citation' && typeof citation?.url === 'string') {
+          yield {
+            type: 'content_block_delta',
+            index,
+            delta: {
+              type: 'citations_delta',
+              citation: {
+                type: 'web_search_result_location',
+                url: citation.url,
+                title: typeof citation.title === 'string' ? citation.title : null,
+                cited_text: blockText.trim(),
+                encrypted_index: '',
+              },
+            },
+          }
+        }
+      }
+    }
+    if (typeof choice.finish_reason === 'string') {
+      finish = stopReason(choice.finish_reason)
+    }
+  }
+  signal.throwIfAborted()
+  throw new ApiError('interrupted', '')
+}
+
+const completion = (root: string, apiKey: string, body: unknown, signal: AbortSignal) =>
+  request(`${root}/chat/completions`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  })
+
+export async function* streamOpenaiMessage(
+  root: string,
+  apiKey: string,
+  body: OpenaiRequest,
+  signal: AbortSignal
+): AsyncGenerator<MessageStreamEvent> {
+  const response = await completion(root, apiKey, body, signal)
+  if (!response.body || !response.headers.get('Content-Type')?.includes('text/event-stream')) {
+    throw new ApiError('protocol', 'Expected a chat completion event stream')
+  }
+  yield* openaiStreamEvents(response.body, body.model, signal)
+}
+
+export const generateOpenaiTitle = async (
+  root: string,
+  apiKey: string,
+  model: string,
+  question: string,
+  answer: string,
+  signal: AbortSignal
+): Promise<string> => {
+  const response = await completion(
+    root,
+    apiKey,
+    {
+      model,
+      stream: false,
+      max_tokens: 64,
+      reasoning_effort: 'none',
+      messages: [
+        {
+          role: 'system',
+          content:
+            "Write a short chat title in the user's language (at most 8 words). Output only the title. Do not reason or explain.",
+        },
+        {
+          role: 'user',
+          content: `Question: ${question.slice(0, 2000)}\nAnswer: ${answer.slice(0, 2000)}`,
+        },
+      ],
+    },
+    signal
+  )
+  const body = record(await response.json())
+  const choice = Array.isArray(body?.choices) ? record(body.choices[0]) : null
+  const content = record(choice?.message)?.content
+  if (typeof content !== 'string' || !content.trim()) {
+    throw new ApiError('protocol', 'Missing chat title')
+  }
+  return content
+    .trim()
+    .replace(/^["'“”]+|["'“”]+$/g, '')
+    .slice(0, 120)
+}

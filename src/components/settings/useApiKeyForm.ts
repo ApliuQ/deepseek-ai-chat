@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import { ApiError, verifyApiKey } from '../../services/api/client.js'
 import { classifyApiError } from '../../services/api/errors.js'
-import { setApiKey } from '../../services/settings.js'
+import { setConnection, useSettings } from '../../services/settings.js'
 import { useTranslate } from '../../i18n/index.js'
 
 /** 输入 API Key 后先用 GET /models 校验，通过才保存 */
 export const useApiKeyForm = (onSaved?: () => void) => {
   const t = useTranslate()
-  const [value, setValue] = useState('')
+  const [value, setValue] = useState(() => useSettings.getState().apiKey ?? '')
+  const [baseUrl, setBaseUrl] = useState(() => useSettings.getState().baseUrl)
   const [verifying, setVerifying] = useState(false)
   const [failure, setFailure] = useState<{ cause: unknown } | null>(null)
   const cause = failure?.cause
@@ -29,15 +30,24 @@ export const useApiKeyForm = (onSaved?: () => void) => {
 
   const submit = async () => {
     const apiKey = value.trim()
-    if (!apiKey || verifying) {
+    if (!apiKey || !baseUrl.trim() || verifying) {
       return
     }
     setVerifying(true)
     setFailure(null)
     try {
-      await verifyApiKey(apiKey)
-      setApiKey(apiKey)
-      setValue('')
+      const url = new URL(baseUrl.trim())
+      if (
+        !['http:', 'https:'].includes(url.protocol) ||
+        url.search ||
+        url.hash ||
+        url.username ||
+        url.password
+      ) {
+        throw new Error(t('baseUrlInvalid'))
+      }
+      const models = await verifyApiKey(apiKey, baseUrl.trim())
+      setConnection(apiKey, baseUrl, models)
       onSaved?.()
     } catch (e) {
       setFailure({ cause: e })
@@ -46,5 +56,5 @@ export const useApiKeyForm = (onSaved?: () => void) => {
     }
   }
 
-  return { value, setValue, verifying, error, submit }
+  return { value, setValue, baseUrl, setBaseUrl, verifying, error, submit }
 }

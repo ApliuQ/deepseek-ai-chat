@@ -1,4 +1,8 @@
 export const zh = {
+  baseUrlLabel: 'API 基础地址',
+  baseUrlPlaceholder: 'https://api.deepseek.com',
+  baseUrlInvalid: '请输入 HTTP 或 HTTPS 地址，不含凭据、查询参数或片段。',
+  openaiModelLabel: '模型',
   welcomeMessageChat250808: '今天有什么可以帮到你？',
   contentCaveat: '内容由 AI 生成，请仔细甄别',
   expandSiderbarButton: '打开边栏',
