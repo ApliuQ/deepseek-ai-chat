@@ -305,11 +305,18 @@ export const toRequestMessages = (
   question: UserMessage,
   prefix?: AssistantMessage,
   thinking = prefix?.thinking ?? false,
-  latestReminder?: string
+  latestReminder?: string,
+  omitLocation = false
 ): MessageParam[] => {
   const messages: MessageParam[] = []
   let previousReminder: string | undefined
   const appendReminder = (reminder: string | undefined) => {
+    if (omitLocation && reminder) {
+      // 清空位置后，历史和续写快照也不再携带位置。
+      const fields = reminder.split(',')
+      reminder =
+        fields.length >= 5 ? [...fields.slice(0, 2), '', ...fields.slice(-2)].join(',') : undefined
+    }
     // 仅在当前分支首次出现或内容变化时插入快照；缺少快照的消息保持原有内容。
     if (reminder && reminder !== previousReminder) {
       messages.push({ role: 'latest_reminder', content: reminder })

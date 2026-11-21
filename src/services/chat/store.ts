@@ -1096,7 +1096,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           prepared.question,
           prepared.prefix,
           initial.thinking ?? false,
-          latestReminder
+          latestReminder,
+          useSettings.getState().location === null
         )
         const localFiles = [prepared.question, ...prepared.history].flatMap((message) =>
           message.role === 'user' ? message.files : []
