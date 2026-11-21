@@ -12,9 +12,16 @@ const storage = () => {
   }
 }
 const sse = (frames) =>
-  new Response(sseBody(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join('')), {
-    headers: { 'Content-Type': 'text/event-stream' },
-  })
+  new Response(
+    sseBody(
+      frames
+        .map((frame) => `data: ${frame === '[DONE]' ? frame : JSON.stringify(frame)}\n\n`)
+        .join('')
+    ),
+    {
+      headers: { 'Content-Type': 'text/event-stream' },
+    }
+  )
 const completed = {
   type: 'response.completed',
   response: {
@@ -382,14 +389,14 @@ test('mid-stream hosted failure closes partial blocks before falling through wit
   assert.equal(events.filter((e) => e.type === 'message_stop').length, 1)
 })
 
-test('Responses runtime citations without completed search fall through; failed client requests invalidate cache', async () => {
+test('hosted answers without search do not fall through; failed client requests invalidate cache', async () => {
   const store = storage()
   let chats = 0
   const api = await loadApi({
     storage: store,
     fetch: async (url) => {
       if (url.endsWith('/responses')) {
-        return sse([citation, completed])
+        return sse([{ type: 'response.output_text.delta', delta: 'A red square' }, completed])
       }
       chats++
       return new Response('unavailable', { status: 503 })
@@ -409,9 +416,151 @@ test('Responses runtime citations without completed search fall through; failed 
     const events = await collect(
       api.streamOpenaiMessage('https://gateway.test/v1', 'key', body, signal())
     )
-    assert.equal(store.getItem(key), null)
-    assert.match(events.map((e) => e.content_block?.text ?? '').join(''), /当前模型不支持联网搜索/)
+    if (method === 'client') {
+      assert.equal(store.getItem(key), null)
+      assert.match(
+        events.map((e) => e.content_block?.text ?? '').join(''),
+        /当前模型不支持联网搜索/
+      )
+    } else {
+      assert.ok(store.getItem(key))
+      assert.ok(events.some((e) => e.delta?.text === 'A red square'))
+      assert.equal(
+        events.some((e) => e.content_block?.type === 'server_tool_use'),
+        false
+      )
+    }
     assert.equal(events.filter((e) => e.type === 'message_stop').length, 1)
   }
-  assert.equal(chats, 2)
+  assert.equal(chats, 1)
+})
+
+test('unknown capabilities do not probe or show search tools for an ordinary image answer', async () => {
+  let calls = 0
+  const api = await loadApi({
+    fetch: async (url, init) => {
+      calls++
+      assert.ok(url.endsWith('/chat/completions'))
+      const body = JSON.parse(init.body)
+      assert.equal(body.stream, true)
+      assert.equal(body.messages[1].content[0].type, 'image_url')
+      return sse([
+        { choices: [{ delta: { content: 'A red square' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+        '[DONE]',
+      ])
+    },
+  })
+  const body = await api.buildOpenaiRequest(
+    [{ role: 'user', content: [{ type: 'image', source: { type: 'file', file_id: 'image' } }] }],
+    'm',
+    false,
+    true,
+    async () => ({
+      blob: new Blob(['image'], { type: 'image/png' }),
+      name: 'red.png',
+      isImage: true,
+    }),
+    signal()
+  )
+  const events = await collect(
+    api.streamOpenaiMessage('https://gateway.test/v1', 'key', body, signal())
+  )
+  assert.equal(calls, 1)
+  assert.equal(
+    events.some((e) => e.content_block?.type === 'server_tool_use'),
+    false
+  )
+  assert.equal(
+    events.map((e) => e.delta?.text ?? e.content_block?.text ?? '').join(''),
+    'A red square'
+  )
+})
+
+test('unknown capabilities wait until a tool is requested, after the first token, then redirect to hosted search', async () => {
+  const calls = []
+  const api = await loadApi({
+    fetch: async (url, init) => {
+      const body = JSON.parse(init.body)
+      calls.push([url, body.stream])
+      if (!body.stream) {
+        return Response.json(
+          url.endsWith('/responses') ? { output: [search.item] } : { choices: [] }
+        )
+      }
+      if (url.endsWith('/responses')) {
+        return sse([search, { type: 'response.output_text.delta', delta: 'News' }, completed])
+      }
+      return sse([
+        { choices: [{ delta: { content: 'Let me check.' } }] },
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: 'call',
+                    function: { name: 'web_search', arguments: '{"query":"news"}' },
+                  },
+                ],
+              },
+              finish_reason: 'tool_calls',
+            },
+          ],
+        },
+        '[DONE]',
+      ])
+    },
+  })
+  const body = await api.buildOpenaiRequest(
+    [{ role: 'user', content: 'news' }],
+    'm',
+    false,
+    true,
+    async () => undefined,
+    signal()
+  )
+  const source = api.streamOpenaiMessage('https://gateway.test/v1', 'key', body, signal())
+  let event
+  do {
+    event = await source.next()
+  } while (!event.done && !event.value.delta?.text)
+  assert.equal(event.value.delta.text, 'Let me check.')
+  assert.equal(calls.length, 1)
+  const remaining = await collect(source)
+  assert.equal(calls.length, 4)
+  const tools = remaining.filter((e) => e.content_block?.type === 'server_tool_use')
+  assert.equal(tools.length, 1)
+  assert.equal(tools[0].content_block.id, search.item.id)
+  assert.equal(remaining.filter((e) => e.type === 'message_stop').length, 1)
+})
+
+test('Responses starts search UI only on an actual in-progress web_search_call', async () => {
+  const api = await loadApi()
+  const events = await collect(
+    api.responsesStreamEvents(
+      sse([
+        { type: 'response.created', response: { id: 'r' } },
+        {
+          ...search,
+          item: {
+            ...search.item,
+            status: 'in_progress',
+            action: { type: 'search', query: 'pending query' },
+          },
+        },
+        search,
+        completed,
+      ]).body,
+      'm',
+      signal()
+    )
+  )
+  assert.equal(events.filter((e) => e.content_block?.type === 'server_tool_use').length, 1)
+  assert.equal(
+    events.find((e) => e.content_block?.type === 'server_tool_use').content_block.input.query,
+    'pending query'
+  )
+  assert.equal(events.filter((e) => e.content_block?.type === 'web_search_tool_result').length, 1)
 })

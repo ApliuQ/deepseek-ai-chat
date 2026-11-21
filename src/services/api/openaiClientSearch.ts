@@ -219,7 +219,8 @@ export async function* streamClientMessage(
   apiKey: string,
   body: OpenaiRequest,
   signal: AbortSignal,
-  onSearchUnavailable?: () => void
+  onSearchUnavailable?: () => void,
+  beforeSearch?: () => Promise<void>
 ): AsyncGenerator<MessageStreamEvent> {
   const messages = [...body.messages]
   const search = body.tools?.some((tool) => tool.function.name === 'web_search') ?? false
@@ -317,10 +318,7 @@ export async function* streamClientMessage(
       }
     }
     if (!canSearch || !turn.calls.length) {
-      if (
-        !turn.content.trim() ||
-        (search && (!sources.size || turn.calls.length || turn.finish === 'tool_use'))
-      ) {
+      if (!turn.content.trim() || (search && (turn.calls.length || turn.finish === 'tool_use'))) {
         yield {
           type: 'content_block_start',
           index,
@@ -354,6 +352,8 @@ export async function* streamClientMessage(
       ...(turn.reasoning ? { reasoning_content: turn.reasoning } : {}),
     })
     for (const call of turn.calls) {
+      // 只有模型请求工具时才探测；允许路由层改用服务端搜索。
+      await beforeSearch?.()
       let query = ''
       let results: WebSearchResult[] = []
       let failure = ''

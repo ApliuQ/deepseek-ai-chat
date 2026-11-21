@@ -6,7 +6,12 @@ import { createLiteralToolFilter } from './openaiSearch.js'
 import { WEB_SEARCH_TOOL, FETCH_URL_TOOL, type OpenaiToolCall } from './openaiSearch.js'
 import { streamClientMessage } from './openaiClientSearch.js'
 import { buildResponsesRequest, responsesStreamEvents } from './openaiResponses.js'
-import { detectSearchMethod, invalidateSearchMethod } from './openaiSearchCapabilities.js'
+import {
+  cachedSearchMethod,
+  detectSearchMethod,
+  invalidateSearchMethod,
+  type SearchMethod,
+} from './openaiSearchCapabilities.js'
 
 export type OpenaiMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -275,6 +280,12 @@ export async function* streamChatMessage(
   yield* openaiStreamEvents(response.body, body.model, signal)
 }
 
+class SearchRedirect extends Error {
+  constructor(readonly method: SearchMethod) {
+    super('Hosted search selected')
+  }
+}
+
 export async function* streamOpenaiMessage(
   root: string,
   apiKey: string,
@@ -285,11 +296,17 @@ export async function* streamOpenaiMessage(
     yield* streamChatMessage(root, apiKey, body, signal)
     return
   }
-  const method = await detectSearchMethod(root, apiKey, body.model, signal)
+  const cached = cachedSearchMethod(root, body.model)
   const tiers = ['chat', 'responses', 'client'] as const
+  let remaining: SearchMethod[] = tiers.slice(tiers.indexOf(cached ?? 'client'))
+  let needsDetection = cached === null
   let nextIndex = 0
   let started = false
-  for (const tier of tiers.slice(tiers.indexOf(method))) {
+  while (remaining.length) {
+    const tier = remaining.shift()
+    if (!tier) {
+      break
+    }
     const offset = nextIndex
     const activeBlocks = new Set<number>()
     try {
@@ -325,9 +342,18 @@ export async function* streamOpenaiMessage(
                   tool_choice: 'auto',
                 },
                 signal,
-                () => invalidateSearchMethod(root, body.model)
+                () => invalidateSearchMethod(root, body.model),
+                async () => {
+                  if (!needsDetection) {
+                    return
+                  }
+                  needsDetection = false
+                  const method = await detectSearchMethod(root, apiKey, body.model, signal)
+                  if (method !== 'client') {
+                    throw new SearchRedirect(method)
+                  }
+                }
               )
-      let searched = tier === 'client'
       const terminal: MessageStreamEvent[] = []
       for await (const event of source) {
         if (event.type === 'message_start') {
@@ -338,20 +364,6 @@ export async function* streamOpenaiMessage(
         } else if (event.type === 'message_stop' || event.type === 'message_delta') {
           terminal.push(event)
         } else {
-          if (
-            tier === 'chat' &&
-            event.type === 'content_block_delta' &&
-            event.delta.type === 'citations_delta'
-          ) {
-            searched = true
-          }
-          if (
-            tier === 'responses' &&
-            event.type === 'content_block_start' &&
-            event.content_block.type === 'web_search_tool_result'
-          ) {
-            searched = true
-          }
           if ('index' in event) {
             nextIndex = Math.max(nextIndex, offset + event.index + 1)
             if (event.type === 'content_block_start') {
@@ -366,15 +378,16 @@ export async function* streamOpenaiMessage(
           }
         }
       }
-      if (!searched) {
-        throw new ApiError('protocol', 'No hosted search evidence returned')
-      }
       yield* terminal
       return
-    } catch {
+    } catch (error) {
       signal.throwIfAborted()
       for (const index of activeBlocks) {
         yield { type: 'content_block_stop', index }
+      }
+      if (error instanceof SearchRedirect) {
+        remaining = tiers.slice(tiers.indexOf(error.method))
+        continue
       }
       invalidateSearchMethod(root, body.model)
       if (tier === 'client') {

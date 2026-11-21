@@ -46,6 +46,7 @@ export async function* responsesStreamEvents(
   let answer = ''
   let started = false
   const seenSearch = new Set<string>()
+  const seenResults = new Set<string>()
   const seenCitations = new Set<string>()
   const filter = createLiteralToolFilter()
   for await (const frame of readServerSentEvents(stream, signal)) {
@@ -116,29 +117,35 @@ export async function* responsesStreamEvents(
       const output = obj(raw)
       if (
         output.type === 'web_search_call' &&
-        output.status === 'completed' &&
-        !seenSearch.has(String(output.id))
+        (output.status === 'in_progress' || output.status === 'completed') &&
+        !seenResults.has(String(output.id))
       ) {
-        seenSearch.add(String(output.id))
         if (active) {
           yield { type: 'content_block_stop', index }
           active = null
         }
         const action = obj(output.action)
         const query = typeof action.query === 'string' ? action.query : ''
-        yield {
-          type: 'content_block_start',
-          index: ++index,
-          content_block: {
-            type: 'server_tool_use',
-            id: String(output.id),
-            name: 'deepseek_web_search',
-            kind: 'search',
-            caller: { type: 'direct' },
-            input: { action: 'search', query, queries: [query] },
-          },
+        if (!seenSearch.has(String(output.id))) {
+          seenSearch.add(String(output.id))
+          yield {
+            type: 'content_block_start',
+            index: ++index,
+            content_block: {
+              type: 'server_tool_use',
+              id: String(output.id),
+              name: 'deepseek_web_search',
+              kind: 'search',
+              caller: { type: 'direct' },
+              input: { action: 'search', query, queries: [query] },
+            },
+          }
+          yield { type: 'content_block_stop', index }
         }
-        yield { type: 'content_block_stop', index }
+        if (output.status !== 'completed') {
+          continue
+        }
+        seenResults.add(String(output.id))
         const results: WebSearchResult[] = (
           Array.isArray(action.sources) ? action.sources : []
         ).flatMap((rawSource) => {

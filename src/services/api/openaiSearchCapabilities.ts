@@ -85,16 +85,9 @@ const probe = async (root: string, apiKey: string, model: string): Promise<Searc
   return 'client'
 }
 
-export const detectSearchMethod = async (
-  root: string,
-  apiKey: string,
-  model: string,
-  signal: AbortSignal
-): Promise<SearchMethod> => {
-  signal.throwIfAborted()
-  const key = searchCapabilityKey(root, model)
+export const cachedSearchMethod = (root: string, model: string): SearchMethod | null => {
   try {
-    const cached = JSON.parse(localStorage.getItem(key) ?? 'null')
+    const cached = JSON.parse(localStorage.getItem(searchCapabilityKey(root, model)) ?? 'null')
     if (
       cached &&
       ['chat', 'responses', 'client'].includes(cached.method) &&
@@ -107,6 +100,21 @@ export const detectSearchMethod = async (
   } catch {
     // 损坏或不可用的缓存不影响请求。
   }
+  return null
+}
+
+export const detectSearchMethod = async (
+  root: string,
+  apiKey: string,
+  model: string,
+  signal: AbortSignal
+): Promise<SearchMethod> => {
+  signal.throwIfAborted()
+  const cached = cachedSearchMethod(root, model)
+  if (cached) {
+    return cached
+  }
+  const key = searchCapabilityKey(root, model)
   let task = pending.get(key)
   if (!task) {
     task = probe(root.replace(/\/+$/, ''), apiKey, model)
