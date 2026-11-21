@@ -48,6 +48,7 @@ export const Select = <T extends string>({
         aria-haspopup="listbox"
         aria-expanded={open}
         disabled={disabled}
+        title={current?.label}
         onClick={() => setOpen((value) => !value)}
       >
         {current ? (
@@ -72,6 +73,7 @@ export const Select = <T extends string>({
                 <div
                   key={option.value}
                   role="option"
+                  title={option.label}
                   lang={option.lang}
                   aria-selected={option.value === value}
                   className={styles.option}

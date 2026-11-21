@@ -10,6 +10,11 @@ export type ThemePreference = 'light' | 'dark' | 'system'
 /** 本机设置，存 localStorage：API Key、语言、主题、位置、朗读音色、深度思考与智能搜索开关、侧边栏收起状态 */
 type Settings = {
   apiKey: string | null
+  baseUrl: string
+  openaiModel: string
+  openaiModels: string[]
+  deepseekModel: string
+  deepseekModels: string[]
   locale: Locale
   themePreference: ThemePreference
   location: UserLocation | null
@@ -21,6 +26,9 @@ type Settings = {
 
 const KEYS = {
   apiKey: 'chat-demo:api-key',
+  baseUrl: 'chat-demo:base-url',
+  openaiModel: 'chat-demo:openai-model',
+  deepseekModel: 'chat-demo:deepseek-model',
   locale: 'chat-demo:locale',
   location: 'chat-demo:location',
   themePreference: 'chat-demo:theme-preference',
@@ -87,8 +95,64 @@ const initialThemePreference = (): ThemePreference => {
 /** 未保存过时使用服务端默认音色 stella（海星） */
 const initialTtsVoice = (): TtsVoice => (read(KEYS.ttsVoice) === 'tide' ? 'tide' : 'stella')
 
+export const normalizeBaseUrl = (baseUrl: string): string => baseUrl.trim().replace(/\/+$/, '')
+
+export const getApiProvider = (baseUrl: string): 'deepseek' | 'openai' => {
+  const normalized = normalizeBaseUrl(baseUrl)
+  const origin = normalizeBaseUrl(__API_ORIGIN__)
+  return [origin, `${origin}/v1`, `${origin}/anthropic`].includes(normalized)
+    ? 'deepseek'
+    : 'openai'
+}
+
+export const getOpenaiRoot = (baseUrl: string): string => {
+  const normalized = normalizeBaseUrl(baseUrl)
+  return /\/v\d+(?:\.\d+)*$/.test(normalized) ? normalized : `${normalized}/v1`
+}
+
+export const getApiOrigin = (): string => {
+  const baseUrl = normalizeBaseUrl(useSettings.getState().baseUrl)
+  return getApiProvider(baseUrl) === 'deepseek' ? normalizeBaseUrl(__API_ORIGIN__) : baseUrl
+}
+
+export const getDefaultBaseUrl = (): string => {
+  if (typeof window !== 'undefined') {
+    if (window.self !== window.top) {
+      try {
+        const parent = window.location.ancestorOrigins?.[0] || new URL(document.referrer).origin
+        if (parent && parent !== 'null') {
+          return getOpenaiRoot(parent)
+        }
+      } catch {
+        // 无法读取嵌入来源时使用构建默认值
+      }
+    }
+  }
+  return __API_ORIGIN__
+}
+
+const initialBaseUrl = (): string => {
+  const saved = read(KEYS.baseUrl)
+  if (saved) {
+    return saved
+  }
+  if (typeof window !== 'undefined') {
+    const params = new URLSearchParams(window.location.search)
+    const explicit = params.get('baseUrl') || params.get('base_url')
+    if (explicit?.trim()) {
+      return normalizeBaseUrl(explicit)
+    }
+  }
+  return getDefaultBaseUrl()
+}
+
 export const useSettings = create<Settings>(() => ({
   apiKey: read(KEYS.apiKey),
+  baseUrl: initialBaseUrl(),
+  openaiModel: read(KEYS.openaiModel) ?? '',
+  openaiModels: [],
+  deepseekModel: read(KEYS.deepseekModel) || 'deepseek-flash',
+  deepseekModels: [],
   locale: initialLocale(),
   location: initialLocation(),
   themePreference: initialThemePreference(),
@@ -122,6 +186,51 @@ export const setTtsVoice = (ttsVoice: TtsVoice) => {
 export const setApiKey = (apiKey: string | null) => {
   write(KEYS.apiKey, apiKey)
   useSettings.setState({ apiKey })
+}
+
+export const setConnection = (apiKey: string, baseUrl: string, models: string[]) => {
+  const normalized = normalizeBaseUrl(baseUrl)
+  write(KEYS.apiKey, apiKey)
+  write(KEYS.baseUrl, normalized)
+  useSettings.setState({ apiKey, baseUrl: normalized })
+  if (getApiProvider(normalized) === 'deepseek') {
+    setDeepseekModels(models)
+  } else {
+    setOpenaiModels(models)
+  }
+}
+
+export const setDeepseekModel = (deepseekModel: string) => {
+  write(KEYS.deepseekModel, deepseekModel)
+  useSettings.setState({ deepseekModel })
+}
+
+export const setDeepseekModels = (models: string[]) => {
+  const sorted = sortModelNames(models)
+  const selected = useSettings.getState().deepseekModel
+  useSettings.setState({ deepseekModels: sorted })
+  if (!sorted.includes(selected)) {
+    setDeepseekModel('deepseek-flash')
+  }
+}
+
+export const setOpenaiModel = (openaiModel: string) => {
+  write(KEYS.openaiModel, openaiModel)
+  useSettings.setState({ openaiModel })
+}
+
+export const sortModelNames = (models: string[]): string[] =>
+  [...new Set(models)].sort((a, b) =>
+    a.localeCompare(b, 'en', { sensitivity: 'base', numeric: true })
+  )
+
+export const setOpenaiModels = (models: string[]) => {
+  const sorted = sortModelNames(models)
+  const selected = useSettings.getState().openaiModel
+  useSettings.setState({ openaiModels: sorted })
+  if (!sorted.includes(selected)) {
+    setOpenaiModel(sorted[0] ?? '')
+  }
 }
 
 export const setThinking = (thinking: boolean) => {

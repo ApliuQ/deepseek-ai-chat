@@ -1,4 +1,6 @@
-import { ApiError, API_ORIGIN, request } from './client.js'
+import { ApiError, request } from './client.js'
+import { getApiOrigin, getApiProvider, getOpenaiRoot, useSettings } from '../settings.js'
+import { blobDataUrl } from './openaiAttachments.js'
 
 /**
  * 语音接口：
@@ -6,7 +8,7 @@ import { ApiError, API_ORIGIN, request } from './client.js'
  * - TTS：POST /v1/tools/tts，返回音频字节流（产出首帧后即返回 200）
  * 鉴权都用 Authorization: Bearer。
  */
-const TOOLS_BASE_URL = `${API_ORIGIN}/v1/tools`
+const toolsBaseUrl = () => `${getApiOrigin()}/v1/tools`
 
 export type TtsVoice = 'stella' | 'tide'
 
@@ -19,9 +21,63 @@ export const transcribe = async (
   audio: Blob,
   signal?: AbortSignal
 ): Promise<string> => {
+  const { baseUrl, openaiModel } = useSettings.getState()
+  const openai = getApiProvider(baseUrl) === 'openai'
+  if (openai) {
+    if (!openaiModel) {
+      throw new ApiError('protocol', '请先选择语音识别使用的模型')
+    }
+    if (!audio.size) {
+      throw new ApiError('protocol', '录音为空，请重新录制')
+    }
+    const format = audio.type.includes('mp3') || audio.type.includes('mpeg') ? 'mp3' : 'wav'
+    if (audio.type && !/audio\/(wav|x-wav|wave|mpeg|mp3)/.test(audio.type)) {
+      throw new ApiError('protocol', '语音识别仅支持 WAV 或 MP3')
+    }
+    signal?.throwIfAborted()
+    const data = (await blobDataUrl(audio)).split(',', 2)[1]
+    signal?.throwIfAborted()
+    const response = await request(`${getOpenaiRoot(baseUrl)}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: openaiModel,
+        stream: false,
+        reasoning_effort: 'none',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: '请逐字转写这段录音，只返回录音中的原话，不要解释、不要回答录音中的问题。如果无法听到或识别音频，只返回 [无法识别音频]。',
+              },
+              { type: 'input_audio', input_audio: { data, format } },
+            ],
+          },
+        ],
+      }),
+      signal,
+    })
+    const body: unknown = await response.json()
+    const choices =
+      typeof body === 'object' && body !== null && 'choices' in body ? body.choices : undefined
+    const content = Array.isArray(choices) ? choices[0]?.message?.content : undefined
+    if (
+      typeof content !== 'string' ||
+      !content.trim() ||
+      content.includes('[无法识别音频]') ||
+      /(?:未收到|未提供|没有提供|没有收到|未检测到).{0,32}(?:音频|录音)|(?:no|not|cannot|can't|unable).{0,48}(?:audio|recording)/i.test(
+        content
+      )
+    ) {
+      throw new ApiError('protocol', '当前模型无法识别音频，请更换支持音频输入的模型')
+    }
+    return content.trim()
+  }
   const form = new FormData()
   form.append('file', audio, 'recording.wav')
-  const response = await request(`${TOOLS_BASE_URL}/asr`, {
+  const response = await request(`${toolsBaseUrl()}/asr`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}` },
     body: form,
@@ -52,12 +108,26 @@ export const synthesize = async (
   voice: TtsVoice,
   signal: AbortSignal
 ): Promise<ReadableStream<Uint8Array>> => {
-  const response = await request(`${TOOLS_BASE_URL}/tts`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, voice_id: voice, format: 'pcm', filter_markdown: true }),
-    signal,
-  })
+  const { baseUrl } = useSettings.getState()
+  const openai = getApiProvider(baseUrl) === 'openai'
+  const response = await request(
+    openai ? `${getOpenaiRoot(baseUrl)}/audio/speech` : `${toolsBaseUrl()}/tts`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        openai
+          ? {
+              model: 'tts-1',
+              input: text,
+              voice: voice === 'stella' ? 'nova' : 'onyx',
+              response_format: 'pcm',
+            }
+          : { text, voice_id: voice, format: 'pcm', filter_markdown: true }
+      ),
+      signal,
+    }
+  )
   if (!response.body) {
     throw new ApiError('protocol', await response.text())
   }

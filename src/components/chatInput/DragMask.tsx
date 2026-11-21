@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslate } from '../../i18n/index.js'
 import { MAX_COUNT, MAX_SIZE_MB } from '../../services/attachments.js'
+import { getApiProvider, useSettings } from '../../services/settings.js'
 import styles from './DragMask.module.css'
 
 const hasFiles = (event: DragEvent) => event.dataTransfer?.types.includes('Files') ?? false
@@ -61,13 +62,14 @@ export const DragMask = () => createPortal(<DragMaskContent />, document.body)
 
 const DragMaskContent = () => {
   const t = useTranslate()
+  const custom = useSettings((state) => getApiProvider(state.baseUrl) === 'openai')
   return (
     <div className={styles.mask}>
       <div className={styles.wrap}>
         <UploadIcon />
         <div className={styles.title}>{t('dragFileToUpload')}</div>
         <div className={styles.desc}>
-          {t('dragFileDesc', { count: MAX_COUNT, size: MAX_SIZE_MB })}
+          {t('dragFileDesc', { count: MAX_COUNT, size: custom ? 50 : MAX_SIZE_MB })}
         </div>
       </div>
     </div>

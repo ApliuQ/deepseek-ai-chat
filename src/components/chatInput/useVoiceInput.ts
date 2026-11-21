@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TranslationMessage } from '../../i18n/index.js'
 import { transcribe } from '../../services/api/speech.js'
 import { startRecording, type Recording } from '../../services/speech/recorder.js'
-import { useSettings } from '../../services/settings.js'
+import { getApiProvider, useSettings } from '../../services/settings.js'
+import { ApiError } from '../../services/api/client.js'
 import { showToast } from '../base/toastState.js'
 
 export type VoiceInputStatus = 'idle' | 'recording' | 'transcribing'
@@ -84,9 +85,13 @@ export const useVoiceInput = (onText: (text: string) => void) => {
       } else {
         showToast({ key: 'voiceInputEmpty' })
       }
-    } catch {
+    } catch (error) {
       if (operationRef.current === operation && !controller?.signal.aborted) {
-        showToast({ key: 'voiceInputFailed' })
+        showToast(
+          getApiProvider(useSettings.getState().baseUrl) === 'openai' && error instanceof Error
+            ? `语音识别失败：${error instanceof ApiError && error.status ? `HTTP ${error.status}：` : ''}${error.message.slice(0, 300)}`
+            : { key: 'voiceInputFailed' }
+        )
       }
     } finally {
       if (operationRef.current === operation) {
