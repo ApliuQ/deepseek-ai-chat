@@ -49,10 +49,14 @@ const getMaxSizeMB = (file: File) =>
 
 /** 添加前校验：格式 → 大小 → 数量，任一不满足即整批不添加 */
 export const validateFiles = (files: File[], currentCount: number): TranslationMessage | null => {
-  if (files.some((file) => !isAcceptedExt(file.name))) {
+  const custom = getApiProvider(useSettings.getState().baseUrl) === 'openai'
+  if (custom && files.some((file) => file.size > 50 * 1024 * 1024)) {
+    return { key: 'uploadCustomTooLarge' }
+  }
+  if (!custom && files.some((file) => !isAcceptedExt(file.name))) {
     return { key: 'uploadUnsupportedFormat' }
   }
-  const oversized = files.find((file) => file.size > getMaxSizeMB(file) * 1024 * 1024)
+  const oversized = !custom && files.find((file) => file.size > getMaxSizeMB(file) * 1024 * 1024)
   if (oversized) {
     return { key: 'uploadMaxMBSize', params: { size: getMaxSizeMB(oversized) } }
   }

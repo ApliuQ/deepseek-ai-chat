@@ -5,6 +5,8 @@ import { toOpenaiFileParts, type LocalFileLoader, type OpenaiPart } from './open
 import { createLiteralToolFilter } from './openaiSearch.js'
 import { WEB_SEARCH_TOOL, FETCH_URL_TOOL, type OpenaiToolCall } from './openaiSearch.js'
 import { streamClientMessage } from './openaiClientSearch.js'
+import { createFileReader, READ_FILE_TOOL, type FileReaderTool } from './openaiFiles.js'
+import { searchFailureNote } from './openaiSearch.js'
 import { buildResponsesRequest, responsesStreamEvents } from './openaiResponses.js'
 import {
   cachedSearchMethod,
@@ -28,9 +30,11 @@ export type OpenaiRequest = {
   stream_options: { include_usage: true }
   reasoning_effort?: 'high' | 'none'
   web_search_options?: Record<string, never>
-  tools?: (typeof WEB_SEARCH_TOOL | typeof FETCH_URL_TOOL)[]
+  tools?: (typeof WEB_SEARCH_TOOL | typeof FETCH_URL_TOOL | typeof READ_FILE_TOOL)[]
   tool_choice?: 'auto' | 'none'
 }
+
+const fileReaders = new WeakMap<OpenaiRequest, FileReaderTool>()
 
 export const buildOpenaiRequest = async (
   messages: MessageParam[],
@@ -45,6 +49,7 @@ export const buildOpenaiRequest = async (
     throw new ApiError('protocol', 'Select a model in settings first')
   }
   const mapped: OpenaiMessage[] = [{ role: 'system', content: 'You are a helpful assistant.' }]
+  const readableFiles = new Set<string>()
   for (const message of messages) {
     signal.throwIfAborted()
     if (message.role === 'latest_reminder') {
@@ -66,7 +71,15 @@ export const buildOpenaiRequest = async (
         } else {
           const file = await loadFile(block.source.file_id)
           if (file) {
-            parts.push(...(await toOpenaiFileParts(file, signal, onAttachmentNotice)))
+            parts.push(
+              ...(await toOpenaiFileParts(
+                file,
+                signal,
+                onAttachmentNotice,
+                block.source.file_id,
+                (id) => readableFiles.add(id)
+              ))
+            )
           }
         }
       }
@@ -82,14 +95,19 @@ export const buildOpenaiRequest = async (
       content: 'Continue your previous response from where it stopped. Do not repeat it.',
     })
   }
-  return {
+  const body: OpenaiRequest = {
     model,
     messages: mapped,
     stream: true,
     stream_options: { include_usage: true },
     reasoning_effort: thinking ? 'high' : 'none',
     ...(search ? { web_search_options: {} } : {}),
+    ...(readableFiles.size ? { tools: [READ_FILE_TOOL], tool_choice: 'auto' as const } : {}),
   }
+  if (readableFiles.size) {
+    fileReaders.set(body, createFileReader(readableFiles, loadFile))
+  }
+  return body
 }
 
 const record = (value: unknown): Record<string, unknown> | null =>
@@ -292,11 +310,32 @@ export async function* streamOpenaiMessage(
   body: OpenaiRequest,
   signal: AbortSignal
 ): AsyncGenerator<MessageStreamEvent> {
+  const readFile = fileReaders.get(body)
+  if (readFile && !body.web_search_options) {
+    yield* streamClientMessage(
+      root,
+      apiKey,
+      {
+        ...body,
+        web_search_options: undefined,
+        tools: [
+          READ_FILE_TOOL,
+          ...(body.web_search_options ? [WEB_SEARCH_TOOL, FETCH_URL_TOOL] : []),
+        ],
+        tool_choice: 'auto',
+      },
+      signal,
+      () => invalidateSearchMethod(root, body.model),
+      undefined,
+      readFile
+    )
+    return
+  }
   if (!body.web_search_options) {
     yield* streamChatMessage(root, apiKey, body, signal)
     return
   }
-  const cached = cachedSearchMethod(root, body.model)
+  const cached = readFile ? 'client' : cachedSearchMethod(root, body.model)
   const tiers = ['chat', 'responses', 'client'] as const
   let remaining: SearchMethod[] = tiers.slice(tiers.indexOf(cached ?? 'client'))
   let needsDetection = cached === null
@@ -338,7 +377,7 @@ export async function* streamOpenaiMessage(
                 {
                   ...body,
                   web_search_options: undefined,
-                  tools: [WEB_SEARCH_TOOL, FETCH_URL_TOOL],
+                  tools: [...(body.tools ?? []), WEB_SEARCH_TOOL, FETCH_URL_TOOL],
                   tool_choice: 'auto',
                 },
                 signal,
@@ -352,7 +391,8 @@ export async function* streamOpenaiMessage(
                   if (method !== 'client') {
                     throw new SearchRedirect(method)
                   }
-                }
+                },
+                readFile
               )
       const terminal: MessageStreamEvent[] = []
       for await (const event of source) {
@@ -390,16 +430,17 @@ export async function* streamOpenaiMessage(
         continue
       }
       invalidateSearchMethod(root, body.model)
+      if (!started) {
+        yield { type: 'message_start', message: { id: '', model: body.model } }
+        started = true
+      }
+      yield {
+        type: 'content_block_start',
+        index: nextIndex,
+        content_block: { type: 'text', text: `\n\n> ${searchFailureNote(error)}\n\n` },
+      }
+      yield { type: 'content_block_stop', index: nextIndex++ }
       if (tier === 'client') {
-        if (!started) {
-          yield { type: 'message_start', message: { id: '', model: body.model } }
-        }
-        yield {
-          type: 'content_block_start',
-          index: nextIndex,
-          content_block: { type: 'text', text: '\n\n当前模型不支持联网搜索' },
-        }
-        yield { type: 'content_block_stop', index: nextIndex }
         yield { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null } }
         yield { type: 'message_stop' }
         return

@@ -188,7 +188,7 @@ test('search loop posts documented payload, continues with tool results and emit
 
 test('denied, malformed and empty searches still allow a final answer; aborts do not continue', async () => {
   for (const result of [
-    () => Response.json({}, { status: 429 }),
+    () => Response.json({ error: { message: 'rate limited by provider' } }, { status: 429 }),
     () => Response.json({ bad: [] }),
     () => exaResponse(),
   ]) {
@@ -210,7 +210,7 @@ test('denied, malformed and empty searches still allow a final answer; aborts do
     )
     assert.match(text(events), /here is what I know/)
     if (JSON.parse(calls[2].body.messages.at(-1).content).error) {
-      assert.match(text(events), /Search unavailable/)
+      assert.match(text(events), /当前模型不支持联网搜索：/)
       assert.equal(calls[2].body.tools, undefined)
       assert.equal(calls[2].body.tool_choice, 'none')
       assert.equal(
@@ -316,6 +316,6 @@ test('search is off by default and search rounds are bounded even if the model k
   assert.equal(completions, 4)
   assert.equal(finalBody.tool_choice, 'none')
   assert.equal(finalBody.tools, undefined)
-  assert.match(text(events), /搜索次数上限/)
+  assert.match(text(events), /搜索工具调用轮数超过上限（3 轮）/)
   assert.equal(events.at(-1).type, 'message_stop')
 })

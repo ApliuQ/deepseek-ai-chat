@@ -27,9 +27,34 @@ const download = async (url: string, init: RequestInit, signal: AbortSignal) => 
       signal: controller.signal,
     })
     if (!response.ok) {
+      let message = response.statusText
+      const reader = response.body?.getReader()
+      if (reader) {
+        let raw = ''
+        let size = 0
+        try {
+          while (size < 4096) {
+            const next = await reader.read()
+            if (next.done) {
+              break
+            }
+            raw += new TextDecoder().decode(next.value.subarray(0, 4096 - size))
+            size += next.value.byteLength
+          }
+        } finally {
+          await reader.cancel().catch(() => {})
+          reader.releaseLock()
+        }
+        try {
+          const body = JSON.parse(raw)
+          message = body?.error?.message ?? body?.message ?? raw
+        } catch {
+          message = raw || message
+        }
+      }
       throw new ApiError(
         'http',
-        `Web service returned HTTP ${response.status}${response.status === 429 ? ' (rate limited; try again later)' : ''}`,
+        String(message).slice(0, 1000) || `Web service returned HTTP ${response.status}`,
         response.status
       )
     }
@@ -94,7 +119,13 @@ const exa = async (name: string, args: Record<string, unknown>, signal: AbortSig
     : [JSON.parse(response.text)]
   const frame = frames.find((item) => item.id === 1)
   if (frame?.error || frame?.result?.isError) {
-    throw new Error('Exa could not execute the requested tool')
+    throw new Error(
+      String(
+        frame?.error?.message ??
+          frame?.result?.content?.map((item: { text?: string }) => item.text ?? '').join(' ') ??
+          'Exa could not execute the requested tool'
+      ).slice(0, 1000)
+    )
   }
   const content: unknown = frame?.result?.content
   if (!Array.isArray(content)) {

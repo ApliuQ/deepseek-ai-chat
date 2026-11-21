@@ -120,7 +120,8 @@ test('inlines images, UTF-8 and Office files, falls back for binary and missing 
   assert.match(parts[2].text, /hello & office/)
   assert.match(parts[3].text, /two\nten/)
   assert.equal(parts[4].type, 'text')
-  assert.match(parts[4].text, /x.doc.*无法提取内容/)
+  assert.match(parts[4].text, /x.doc/)
+  assert.equal(JSON.parse(parts[4].text).size, 6)
   const missing = await api.buildOpenaiRequest(
     [{ role: 'user', content: [{ type: 'image', source: { file_id: 'absent' } }] }],
     'model',
@@ -139,7 +140,7 @@ test('inlines images, UTF-8 and Office files, falls back for binary and missing 
     { blob: new Blob([]), name: 'empty.txt', isImage: false },
     { blob: new Blob(['not zip']), name: 'broken.docx', isImage: false },
   ]) {
-    assert.match((await api.toOpenaiFileParts(file, signal()))[0].text, /无法提取内容/)
+    assert.match((await api.toOpenaiFileParts(file, signal()))[0].text, new RegExp(file.name))
   }
 })
 
@@ -164,7 +165,7 @@ test('PDF extraction cleans up and non-extractable PDFs produce readable notices
     signal()
   )
   assert.match(parts[0].text, /PDF text/)
-  assert.equal(destroyed, 1)
+  assert.equal(destroyed, 2)
   const failed = await loadApi({
     pdfjs: {
       GlobalWorkerOptions: {},

@@ -3,7 +3,13 @@ import { stripTypeScriptTypes } from 'node:module'
 import vm from 'node:vm'
 import { DOMParser } from '@xmldom/xmldom'
 
-export const loadApi = async ({ fetch = globalThis.fetch, pdfjs, clientSource, storage } = {}) => {
+export const loadApi = async ({
+  fetch = globalThis.fetch,
+  pdfjs,
+  clientSource,
+  storage,
+  document,
+} = {}) => {
   const context = vm.createContext({
     URL,
     URLSearchParams,
@@ -14,6 +20,7 @@ export const loadApi = async ({ fetch = globalThis.fetch, pdfjs, clientSource, s
     FormData,
     btoa,
     DOMParser,
+    document,
     AbortController,
     ReadableStream,
     setTimeout,
@@ -44,7 +51,7 @@ export const loadApi = async ({ fetch = globalThis.fetch, pdfjs, clientSource, s
       return stub({ translate: (key) => key })
     }
     if (specifier.includes('resizeUploadImage')) {
-      return stub({ resizeUploadImage: (file) => file })
+      return stub({ resizeUploadImage: (file) => file, isUploadImageOversized: async () => false })
     }
     if (!specifier.startsWith('.')) {
       return external(specifier)
@@ -92,10 +99,15 @@ export const loadApi = async ({ fetch = globalThis.fetch, pdfjs, clientSource, s
   )
   await dialog.link((specifier, parent) => resolve(specifier, parent.identifier))
   await dialog.evaluate()
+  const upload = compile(new URL('../attachments.ts', import.meta.url))
+  await upload.link((specifier, parent) => resolve(specifier, parent.identifier))
+  await upload.evaluate()
   const attachments = modules.get(new URL('./openaiAttachments.ts', import.meta.url).href)
   const settings = modules.get(new URL('../settings.ts', import.meta.url).href)
   const client = modules.get(new URL('./client.ts', import.meta.url).href)
   return {
+    ...upload.namespace,
+    ...modules.get(new URL('./openaiFiles.ts', import.meta.url).href)?.namespace,
     ...modules.get(new URL('./browserWeb.ts', import.meta.url).href)?.namespace,
     ...modules.get(new URL('./openaiSearch.ts', import.meta.url).href)?.namespace,
     ...modules.get(new URL('./openaiClientSearch.ts', import.meta.url).href)?.namespace,

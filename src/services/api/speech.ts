@@ -1,5 +1,6 @@
 import { ApiError, request } from './client.js'
 import { getApiOrigin, getApiProvider, getOpenaiRoot, useSettings } from '../settings.js'
+import { blobDataUrl } from './openaiAttachments.js'
 
 /**
  * 语音接口：
@@ -20,22 +21,68 @@ export const transcribe = async (
   audio: Blob,
   signal?: AbortSignal
 ): Promise<string> => {
-  const form = new FormData()
-  form.append('file', audio, 'recording.wav')
-  const { baseUrl } = useSettings.getState()
+  const { baseUrl, openaiModel } = useSettings.getState()
   const openai = getApiProvider(baseUrl) === 'openai'
   if (openai) {
-    form.append('model', 'whisper-1')
-  }
-  const response = await request(
-    openai ? `${getOpenaiRoot(baseUrl)}/audio/transcriptions` : `${toolsBaseUrl()}/asr`,
-    {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}` },
-      body: form,
-      signal,
+    if (!openaiModel) {
+      throw new ApiError('protocol', '请先选择语音识别使用的模型')
     }
-  )
+    if (!audio.size) {
+      throw new ApiError('protocol', '录音为空，请重新录制')
+    }
+    const format = audio.type.includes('mp3') || audio.type.includes('mpeg') ? 'mp3' : 'wav'
+    if (audio.type && !/audio\/(wav|x-wav|wave|mpeg|mp3)/.test(audio.type)) {
+      throw new ApiError('protocol', '语音识别仅支持 WAV 或 MP3')
+    }
+    signal?.throwIfAborted()
+    const data = (await blobDataUrl(audio)).split(',', 2)[1]
+    signal?.throwIfAborted()
+    const response = await request(`${getOpenaiRoot(baseUrl)}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: openaiModel,
+        stream: false,
+        reasoning_effort: 'none',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: '请逐字转写这段录音，只返回录音中的原话，不要解释、不要回答录音中的问题。如果无法听到或识别音频，只返回 [无法识别音频]。',
+              },
+              { type: 'input_audio', input_audio: { data, format } },
+            ],
+          },
+        ],
+      }),
+      signal,
+    })
+    const body: unknown = await response.json()
+    const choices =
+      typeof body === 'object' && body !== null && 'choices' in body ? body.choices : undefined
+    const content = Array.isArray(choices) ? choices[0]?.message?.content : undefined
+    if (
+      typeof content !== 'string' ||
+      !content.trim() ||
+      content.includes('[无法识别音频]') ||
+      /(?:未收到|未提供|没有提供|没有收到|未检测到).{0,32}(?:音频|录音)|(?:no|not|cannot|can't|unable).{0,48}(?:audio|recording)/i.test(
+        content
+      )
+    ) {
+      throw new ApiError('protocol', '当前模型无法识别音频，请更换支持音频输入的模型')
+    }
+    return content.trim()
+  }
+  const form = new FormData()
+  form.append('file', audio, 'recording.wav')
+  const response = await request(`${toolsBaseUrl()}/asr`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body: form,
+    signal,
+  })
   const raw = await response.text()
   let body: unknown
   try {

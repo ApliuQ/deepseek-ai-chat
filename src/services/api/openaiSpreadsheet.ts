@@ -155,8 +155,8 @@ export const spreadsheetText = async (blob: Blob, signal: AbortSignal): Promise<
         values[column - 1] = `${reference}=${value.replace(/[\t\r\n]/g, ' ')}`
       }
       append(`${rowNumber || rows[index].getAttribute('r') || index + 1}\t${values.join('\t')}`)
-      if (length > 1024 * 1024) {
-        return `${output.join('\n')}\n[附件内容已截断：上限 1 MiB]`
+      if (length > MAX_EXPANDED) {
+        throw new Error('工作簿文本超过 16 MiB 安全上限')
       }
     }
   }

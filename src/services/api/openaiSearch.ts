@@ -7,6 +7,16 @@ export type OpenaiToolCall = {
   function: { name: string; arguments: string }
 }
 
+export const searchFailureNote = (error: unknown): string => {
+  const status = error instanceof ApiError && error.status ? `HTTP ${error.status}: ` : ''
+  const message =
+    (error instanceof Error ? error.message : String(error))
+      .replace(/[\p{Cc}]+/gu, ' ')
+      .replace(/sk-[\w-]{12,}/g, '[已隐藏]')
+      .trim() || '搜索请求失败'
+  return `当前模型不支持联网搜索：${status}${Array.from(message).slice(0, 500).join('')}${message.length > 500 ? '…' : ''}`
+}
+
 export const WEB_SEARCH_TOOL = {
   type: 'function',
   function: {

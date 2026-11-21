@@ -125,7 +125,7 @@ test('literal-only replies never finish blank, including Search off', async () =
       api.streamOpenaiMessage('https://gateway.test/v1', 'secret', body, signal())
     )
     const text = events.map((e) => e.content_block?.text ?? e.delta?.text ?? '').join('')
-    assert.match(text, /未返回可用的联网回答/)
+    assert.match(text, /模型未返回可显示的回答/)
     assert.doesNotMatch(text, /tool_call/)
   }
 })

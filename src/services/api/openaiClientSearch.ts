@@ -2,7 +2,13 @@ import { ApiError, request } from './client.js'
 import { readServerSentEvents } from './sse.js'
 import type { MessageStreamEvent, MessageUsage, StopReason } from './types.js'
 import { fetchBrowserUrl, searchBrowserWeb } from './browserWeb.js'
-import { createLiteralToolFilter, searchQuery, type OpenaiToolCall } from './openaiSearch.js'
+import {
+  createLiteralToolFilter,
+  searchQuery,
+  searchFailureNote,
+  type OpenaiToolCall,
+} from './openaiSearch.js'
+import { FILE_TOOL_ROUNDS, type FileReaderTool } from './openaiFiles.js'
 import type { WebSearchResult } from './types.js'
 
 import type { OpenaiRequest } from './openai.js'
@@ -220,7 +226,8 @@ export async function* streamClientMessage(
   body: OpenaiRequest,
   signal: AbortSignal,
   onSearchUnavailable?: () => void,
-  beforeSearch?: () => Promise<void>
+  beforeSearch?: () => Promise<void>,
+  readFile?: FileReaderTool
 ): AsyncGenerator<MessageStreamEvent> {
   const messages = [...body.messages]
   const search = body.tools?.some((tool) => tool.function.name === 'web_search') ?? false
@@ -230,16 +237,21 @@ export async function* streamClientMessage(
   const sources = new Map<string, WebSearchResult>()
   let searchCalls = 0
   let searchUnavailable = false
+  let lastSearchError: unknown
   for (let round = 0; ; round++) {
     signal.throwIfAborted()
-    const canSearch = search && round < 3 && !searchUnavailable
+    const canSearch = search && searchCalls < 3 && !searchUnavailable
+    const tools = body.tools?.filter((tool) =>
+      tool.function.name === 'read_file' ? !!readFile && round < FILE_TOOL_ROUNDS : canSearch
+    )
     const response = await completion(
       root,
       apiKey,
       {
         ...body,
         messages,
-        ...(search && !canSearch ? { tools: undefined, tool_choice: 'none' } : {}),
+        tools: tools?.length ? tools : undefined,
+        tool_choice: tools?.length ? 'auto' : 'none',
       },
       signal
     )
@@ -317,14 +329,28 @@ export async function* streamClientMessage(
         }
       }
     }
-    if (!canSearch || !turn.calls.length) {
-      if (!turn.content.trim() || (search && (turn.calls.length || turn.finish === 'tool_use'))) {
+    if (!turn.calls.length || round >= FILE_TOOL_ROUNDS || (!readFile && !canSearch)) {
+      if (round >= FILE_TOOL_ROUNDS && turn.calls.length) {
         yield {
           type: 'content_block_start',
           index,
           content_block: {
             type: 'text',
-            text: '\n\n当前模型不支持联网搜索：未返回可用的联网回答，或已达到搜索次数上限。',
+            text: turn.calls.some((call) => call.function.name !== 'read_file')
+              ? `\n\n${searchFailureNote(new Error('工具调用轮数超过上限（8 轮）'))}`
+              : '\n\n文件工具调用轮数超过上限（8 轮），请缩小问题范围。',
+          },
+        }
+        yield { type: 'content_block_stop', index: index++ }
+      } else if (!turn.content.trim() || (search && turn.finish === 'tool_use')) {
+        yield {
+          type: 'content_block_start',
+          index,
+          content_block: {
+            type: 'text',
+            text: search
+              ? `\n\n${searchFailureNote(lastSearchError ?? new Error(canSearch ? '模型未返回可显示的回答' : '搜索工具调用轮数超过上限（3 轮）'))}`
+              : '\n\n模型未返回可显示的回答。',
           },
         }
         yield { type: 'content_block_stop', index: index++ }
@@ -352,14 +378,41 @@ export async function* streamClientMessage(
       ...(turn.reasoning ? { reasoning_content: turn.reasoning } : {}),
     })
     for (const call of turn.calls) {
+      if (call.function.name === 'read_file') {
+        let result: Record<string, unknown>
+        try {
+          if (!readFile) {
+            throw new Error('本次请求未启用文件读取工具')
+          }
+          result = await readFile(call, signal)
+        } catch (error) {
+          signal.throwIfAborted()
+          result = { error: error instanceof Error ? error.message : String(error) }
+        }
+        const name =
+          typeof result.name === 'string'
+            ? result.name.replace(/[\r\n]/g, ' ').slice(0, 120)
+            : '附件'
+        yield {
+          type: 'content_block_start',
+          index,
+          content_block: {
+            type: 'text',
+            text: `\n\n> 读取文件 ${name}${result.error ? `：${result.error}` : ''}\n\n`,
+          },
+        }
+        yield { type: 'content_block_stop', index: index++ }
+        messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) })
+        continue
+      }
       // 只有模型请求工具时才探测；允许路由层改用服务端搜索。
       await beforeSearch?.()
       let query = ''
       let results: WebSearchResult[] = []
       let failure = ''
       try {
-        if (searchUnavailable) {
-          throw new ApiError('protocol', 'Search unavailable for this turn')
+        if (!canSearch || searchUnavailable || searchCalls >= 3) {
+          throw lastSearchError ?? new Error('搜索工具调用轮数超过上限（3 轮）')
         }
         query = searchQuery(call)
         yield {
@@ -375,9 +428,6 @@ export async function* streamClientMessage(
           },
         }
         yield { type: 'content_block_stop', index: index++ }
-        if (searchCalls >= 3) {
-          throw new ApiError('protocol', 'Search call limit reached')
-        }
         searchCalls++
         results = await (call.function.name === 'fetch_url' ? fetchBrowserUrl : searchBrowserWeb)(
           query,
@@ -388,7 +438,8 @@ export async function* streamClientMessage(
         }
       } catch (error) {
         signal.throwIfAborted()
-        failure = `当前模型不支持联网搜索：Search unavailable${error instanceof ApiError && error.status ? ` (${error.status})` : ''}: ${error instanceof Error ? error.message : String(error)}`
+        lastSearchError = error
+        failure = searchFailureNote(error)
         searchUnavailable = true
         onSearchUnavailable?.()
       }

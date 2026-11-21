@@ -36,7 +36,7 @@ test('lazy XLSX extraction preserves sheets, shared/inline strings, cached formu
   assert.match(part.text, /# Sheet: 第二页[\s\S]*1\t\tB1=4821/)
 })
 
-test('CSV decodes UTF-8 then GB18030 and text output is capped at 1 MiB with filename/notice', async () => {
+test('CSV decodes UTF-8 then GB18030 and previews are capped at 10KB without splitting characters', async () => {
   const api = await loadApi()
   for (const [bytes, expected] of [
     [new TextEncoder().encode('姓名,金额\n张三,17'), '张三,17'],
@@ -52,9 +52,10 @@ test('CSV decodes UTF-8 then GB18030 and text output is capped at 1 MiB with fil
     { blob: new Blob(['中'.repeat(600000)]), name: 'large.tsv', isImage: false },
     signal()
   )
-  assert.ok(new TextEncoder().encode(large.text).length <= 1024 * 1024)
+  const preview = large.text.split('\n').slice(2, -2).join('\n')
+  assert.ok(new TextEncoder().encode(preview).length <= 10240)
   assert.match(large.text, /large.tsv/)
-  assert.match(large.text, /已截断/)
+  assert.match(large.text, /仅发送前 10KB/)
   assert.doesNotMatch(large.text, /�/)
 })
 
@@ -72,12 +73,9 @@ test('unsupported, empty and malformed files send readable text and notify inste
       notices.push(text)
     )
     assert.equal(parts[0].type, 'text')
-    assert.match(parts[0].text, /无法提取内容/)
+    assert.equal(JSON.parse(parts[0].text).name, name)
     assert.ok(parts[0].text.includes(name))
     assert.equal(notices.length, 1)
-    if (name.endsWith('.xls')) {
-      assert.match(parts[0].text, /请另存为 xlsx\/csv/)
-    }
     assert.equal(parts[0].file, undefined)
   }
 })
@@ -93,7 +91,7 @@ test('XLSX expanded-size, cell-count, invalid coordinates and cancellation guard
       { blob: new Blob([bytes]), name: 'bomb.xlsx', isImage: false },
       signal()
     )
-    assert.match(part.text, /无法提取内容/)
+    assert.equal(JSON.parse(part.text).name, 'bomb.xlsx')
   }
   const controller = new AbortController()
   controller.abort()

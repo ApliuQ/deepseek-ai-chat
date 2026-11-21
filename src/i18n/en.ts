@@ -1,6 +1,7 @@
 import type { zh } from './zh.js'
 
 export const en = {
+  uploadCustomTooLarge: 'File too large (over 50MB); not supported',
   baseUrlLabel: 'Base URL',
   baseUrlDefault: 'Default',
   apiKeyShow: 'Show API Key',
