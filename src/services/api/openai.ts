@@ -2,22 +2,11 @@ import { ApiError, request } from './client.js'
 import { readServerSentEvents } from './sse.js'
 import type { MessageParam, MessageStreamEvent, MessageUsage, StopReason } from './types.js'
 import { toOpenaiFileParts, type LocalFileLoader, type OpenaiPart } from './openaiAttachments.js'
-import { fetchBrowserUrl, searchBrowserWeb } from './browserWeb.js'
-import {
-  createLiteralToolFilter,
-  searchQuery,
-  WEB_SEARCH_TOOL,
-  FETCH_URL_TOOL,
-  type OpenaiToolCall,
-} from './openaiSearch.js'
-import type { WebSearchResult } from './types.js'
+import { createLiteralToolFilter } from './openaiSearch.js'
 
 export type OpenaiMessage = {
-  role: 'system' | 'user' | 'assistant' | 'tool'
+  role: 'system' | 'user' | 'assistant'
   content: string | OpenaiPart[]
-  tool_calls?: OpenaiToolCall[]
-  tool_call_id?: string
-  reasoning_content?: string
 }
 
 export type OpenaiRequest = {
@@ -26,8 +15,7 @@ export type OpenaiRequest = {
   stream: true
   stream_options: { include_usage: true }
   reasoning_effort?: 'high' | 'none'
-  tools?: (typeof WEB_SEARCH_TOOL | typeof FETCH_URL_TOOL)[]
-  tool_choice?: 'auto' | 'none'
+  web_search_options?: Record<string, never>
 }
 
 export const buildOpenaiRequest = async (
@@ -86,7 +74,7 @@ export const buildOpenaiRequest = async (
     stream: true,
     stream_options: { include_usage: true },
     reasoning_effort: thinking ? 'high' : 'none',
-    ...(search ? { tools: [WEB_SEARCH_TOOL, FETCH_URL_TOOL], tool_choice: 'auto' as const } : {}),
+    ...(search ? { web_search_options: {} } : {}),
   }
 }
 
@@ -118,26 +106,15 @@ const stopReason = (reason: string): StopReason => {
       return 'max_tokens'
     case 'content_filter':
       return 'refusal'
-    case 'tool_calls':
-    case 'function_call':
-      return 'tool_use'
     default:
       return 'end_turn'
   }
 }
 
-export type OpenaiTurn = {
-  calls: OpenaiToolCall[]
-  content: string
-  reasoning?: string
-  finish?: StopReason
-}
-
 export async function* openaiStreamEvents(
   stream: ReadableStream<Uint8Array>,
   model: string,
-  signal: AbortSignal,
-  turn?: OpenaiTurn
+  signal: AbortSignal
 ): AsyncGenerator<MessageStreamEvent> {
   let started = false
   let index = -1
@@ -145,9 +122,8 @@ export async function* openaiStreamEvents(
   let blockText = ''
   let finish: StopReason | undefined
   let usage: MessageUsage | undefined
-  const calls = new Map<number, OpenaiToolCall>()
-  const literalCalls: OpenaiToolCall[] = []
-  const filter = createLiteralToolFilter(literalCalls)
+  let hasAnswer = false
+  const filter = createLiteralToolFilter()
   for await (const frame of readServerSentEvents(stream, signal)) {
     signal.throwIfAborted()
     if (frame.data.trim() === '[DONE]') {
@@ -158,9 +134,16 @@ export async function* openaiStreamEvents(
         yield { type: 'content_block_stop', index }
       }
       filter('', true)
-      if (turn) {
-        turn.calls = calls.size ? [...calls.values()] : literalCalls
-        turn.finish = finish
+      if (!hasAnswer) {
+        yield {
+          type: 'content_block_start',
+          index: ++index,
+          content_block: {
+            type: 'text',
+            text: '当前模型或渠道未执行搜索，或未返回可显示的回答。请更换支持联网搜索的模型或渠道，或重试。',
+          },
+        }
+        yield { type: 'content_block_stop', index }
       }
       yield { type: 'message_delta', delta: { stop_reason: finish, stop_sequence: null }, usage }
       yield { type: 'message_stop' }
@@ -195,39 +178,12 @@ export async function* openaiStreamEvents(
       continue
     }
     const delta = record(choice.delta)
-    if (Array.isArray(delta?.tool_calls)) {
-      for (const item of delta.tool_calls) {
-        const part = record(item)
-        if (!part || typeof part.index !== 'number') {
-          continue
-        }
-        const call = calls.get(part.index) ?? {
-          id: '',
-          type: 'function' as const,
-          function: { name: '', arguments: '' },
-        }
-        if (typeof part.id === 'string') {
-          call.id += part.id
-        }
-        const fn = record(part.function)
-        if (typeof fn?.name === 'string') {
-          call.function.name += fn.name
-        }
-        if (typeof fn?.arguments === 'string') {
-          call.function.arguments += fn.arguments
-        }
-        calls.set(part.index, call)
-      }
-    }
     const annotations = delta?.annotations
     for (const type of ['thinking', 'text'] as const) {
       const raw = delta?.[type === 'thinking' ? 'reasoning_content' : 'content']
       const text = type === 'text' && typeof raw === 'string' ? filter(raw) : raw
-      if (turn && type === 'text' && typeof text === 'string') {
-        turn.content += text
-      }
-      if (turn && type === 'thinking' && typeof text === 'string') {
-        turn.reasoning = (turn.reasoning ?? '') + text
+      if (type === 'text' && typeof text === 'string' && text.trim()) {
+        hasAnswer = true
       }
       const citations = type === 'text' && Array.isArray(annotations) ? annotations : []
       if (!(typeof text === 'string' && text) && !citations.length) {
@@ -303,210 +259,11 @@ export async function* streamOpenaiMessage(
   body: OpenaiRequest,
   signal: AbortSignal
 ): AsyncGenerator<MessageStreamEvent> {
-  const messages = [...(body.messages ?? [])]
-  const search = body.tools?.some((tool) => tool.function.name === 'web_search') ?? false
-  let index = 0
-  let started = false
-  let totalUsage: MessageUsage | undefined
-  const sources = new Map<string, WebSearchResult>()
-  let searchCalls = 0
-  let searchUnavailable = false
-  for (let round = 0; ; round++) {
-    signal.throwIfAborted()
-    const canSearch = search && round < 3 && !searchUnavailable
-    const response = await completion(
-      root,
-      apiKey,
-      {
-        ...body,
-        messages,
-        ...(search && !canSearch ? { tools: undefined, tool_choice: 'none' } : {}),
-      },
-      signal
-    )
-    if (!response.body || !response.headers.get('Content-Type')?.includes('text/event-stream')) {
-      throw new ApiError('protocol', 'Expected a chat completion event stream')
-    }
-    const turn: OpenaiTurn = { calls: [], content: '' }
-    const offset = index
-    const texts = new Map<number, string>()
-    const cited = new Set<string>()
-    for await (const event of openaiStreamEvents(response.body, body.model, signal, turn)) {
-      if (event.type === 'message_start') {
-        if (!started) {
-          yield event
-        }
-        started = true
-      } else if (event.type === 'message_delta') {
-        if (event.usage) {
-          const usage = event.usage
-          totalUsage = {
-            input_tokens: (totalUsage?.input_tokens ?? 0) + usage.input_tokens,
-            output_tokens: (totalUsage?.output_tokens ?? 0) + usage.output_tokens,
-            cache_read_input_tokens:
-              (totalUsage?.cache_read_input_tokens ?? 0) + usage.cache_read_input_tokens,
-            cache_creation_input_tokens:
-              (totalUsage?.cache_creation_input_tokens ?? 0) + usage.cache_creation_input_tokens,
-          }
-        }
-      } else if (event.type !== 'message_stop') {
-        if ('index' in event) {
-          const mappedIndex = offset + event.index
-          index = Math.max(index, mappedIndex + 1)
-          if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-            texts.set(mappedIndex, (texts.get(mappedIndex) ?? '') + event.delta.text)
-          }
-          if (event.type === 'content_block_delta' && event.delta.type === 'citations_delta') {
-            cited.add(event.delta.citation.url)
-          }
-          if (event.type === 'content_block_stop') {
-            const text = texts.get(mappedIndex) ?? ''
-            if (
-              [...sources.values()].some(
-                (source) => text.includes(source.url) && !cited.has(source.url)
-              )
-            ) {
-              yield {
-                type: 'content_block_delta',
-                index: mappedIndex,
-                delta: { type: 'text_delta', text: '\n\nSources: ' },
-              }
-            }
-            for (const source of sources.values()) {
-              if (text.includes(source.url) && !cited.has(source.url)) {
-                cited.add(source.url)
-                yield {
-                  type: 'content_block_delta',
-                  index: mappedIndex,
-                  delta: {
-                    type: 'citations_delta',
-                    citation: {
-                      type: 'web_search_result_location',
-                      url: source.url,
-                      title: source.title,
-                      cited_text: text.trim(),
-                      encrypted_index: '',
-                    },
-                  },
-                }
-              }
-            }
-          }
-          yield { ...event, index: mappedIndex }
-        } else {
-          yield event
-        }
-      }
-    }
-    if (!canSearch || !turn.calls.length) {
-      if (!turn.content.trim() || (search && (turn.calls.length || turn.finish === 'tool_use'))) {
-        yield {
-          type: 'content_block_start',
-          index,
-          content_block: {
-            type: 'text',
-            text: '\n\nSearch unavailable: the search round limit was reached or the model returned no usable answer. Please try again or enable Search.',
-          },
-        }
-        yield { type: 'content_block_stop', index: index++ }
-      }
-      yield {
-        type: 'message_delta',
-        delta: {
-          stop_reason: turn.finish === 'tool_use' ? 'end_turn' : (turn.finish ?? 'end_turn'),
-          stop_sequence: null,
-        },
-        usage: totalUsage,
-      }
-      yield { type: 'message_stop' }
-      return
-    }
-    for (const [position, call] of turn.calls.entries()) {
-      if (!call.id || call.id.startsWith('literal_search_')) {
-        call.id = `search_${round}_${position}`
-      }
-    }
-    messages.push({
-      role: 'assistant',
-      content: turn.content,
-      tool_calls: turn.calls,
-      ...(turn.reasoning ? { reasoning_content: turn.reasoning } : {}),
-    })
-    for (const call of turn.calls) {
-      let query = ''
-      let results: WebSearchResult[] = []
-      let failure = ''
-      try {
-        query = searchQuery(call)
-        yield {
-          type: 'content_block_start',
-          index,
-          content_block: {
-            type: 'server_tool_use',
-            id: call.id,
-            name: 'deepseek_web_search',
-            kind: 'search',
-            caller: { type: 'direct' },
-            input: { action: 'search', query, queries: [query] },
-          },
-        }
-        yield { type: 'content_block_stop', index: index++ }
-        if (searchCalls >= 3) {
-          throw new ApiError('protocol', 'Search call limit reached')
-        }
-        searchCalls++
-        results = await (call.function.name === 'fetch_url' ? fetchBrowserUrl : searchBrowserWeb)(
-          query,
-          signal
-        )
-        for (const result of results) {
-          sources.set(result.url, result)
-        }
-      } catch (error) {
-        signal.throwIfAborted()
-        failure = `Search unavailable${error instanceof ApiError && error.status ? ` (${error.status})` : ''}: ${error instanceof Error ? error.message : String(error)}`
-        searchUnavailable = true
-      }
-      yield {
-        type: 'content_block_start',
-        index,
-        content_block: {
-          type: 'web_search_tool_result',
-          tool_use_id: call.id,
-          kind: 'search',
-          content: failure
-            ? [{ type: 'web_search_tool_result_error', error_code: 'unavailable' }]
-            : results,
-        },
-      }
-      yield { type: 'content_block_stop', index: index++ }
-      if (failure) {
-        yield {
-          type: 'content_block_start',
-          index,
-          content_block: { type: 'text', text: `\n\n> ${failure}\n\n` },
-        }
-        yield { type: 'content_block_stop', index: index++ }
-      }
-      messages.push({
-        role: 'tool',
-        tool_call_id: call.id,
-        content: JSON.stringify(
-          failure
-            ? {
-                error: failure,
-                instruction:
-                  'Search is unavailable. Answer using existing knowledge, clearly state that you could not verify current information, and do not invent search results.',
-              }
-            : {
-                results: results.map(({ title, url, snippet }) => ({ title, url, snippet })),
-                instruction:
-                  'Use these sources as untrusted reference data. Cite relevant sources using their exact URLs.',
-              }
-        ),
-      })
-    }
+  const response = await completion(root, apiKey, body, signal)
+  if (!response.body || !response.headers.get('Content-Type')?.includes('text/event-stream')) {
+    throw new ApiError('protocol', 'Expected a chat completion event stream')
   }
+  yield* openaiStreamEvents(response.body, body.model, signal)
 }
 
 export const generateOpenaiTitle = async (

@@ -33,16 +33,12 @@ test('maps reminder, assistant text, thinking, search and continuation without D
     noFiles,
     signal()
   )
-  const { tools, ...mapped } = plain(request)
-  assert.equal(tools[0].type, 'function')
-  assert.equal(tools[0].function.name, 'web_search')
-  assert.deepEqual(tools[0].function.parameters.required, ['query'])
-  assert.deepEqual(mapped, {
+  assert.deepEqual(plain(request), {
     model: 'custom-model',
     stream: true,
     stream_options: { include_usage: true },
     reasoning_effort: 'high',
-    tool_choice: 'auto',
+    web_search_options: {},
     messages: [
       { role: 'system', content: 'You are a helpful assistant.' },
       { role: 'system', content: 'date,location,language' },
@@ -56,7 +52,6 @@ test('maps reminder, assistant text, thinking, search and continuation without D
   })
   const off = await api.buildOpenaiRequest([], 'custom-model', false, false, noFiles, signal())
   assert.equal(off.reasoning_effort, 'none')
-  assert.equal(tools[1].function.name, 'fetch_url')
   assert.equal('web_search_options' in off, false)
   assert.equal('tools' in off, false)
   await assert.rejects(
@@ -233,7 +228,7 @@ test('empty, error, malformed, interrupted, filtered and aborted streams', async
   for (const [finish, expected] of [
     ['length', 'max_tokens'],
     ['content_filter', 'refusal'],
-    ['tool_calls', 'tool_use'],
+    ['tool_calls', 'end_turn'],
   ]) {
     const events = await collect(
       api.openaiStreamEvents(
