@@ -227,11 +227,22 @@ export async function* streamClientMessage(
   signal: AbortSignal,
   onSearchUnavailable?: () => void,
   beforeSearch?: () => Promise<void>,
-  readFile?: FileReaderTool
+  readFile?: FileReaderTool,
+  failureNotes = new Set<string>()
 ): AsyncGenerator<MessageStreamEvent> {
   const messages = [...body.messages]
   const search = body.tools?.some((tool) => tool.function.name === 'web_search') ?? false
   let index = 0
+  function* note(text: string, failure?: string): Generator<MessageStreamEvent> {
+    if (failure) {
+      if (failureNotes.has(failure)) {
+        return
+      }
+      failureNotes.add(failure)
+    }
+    yield { type: 'content_block_start', index, content_block: { type: 'text', text } }
+    yield { type: 'content_block_stop', index: index++ }
+  }
   let started = false
   let totalUsage: MessageUsage | undefined
   const sources = new Map<string, WebSearchResult>()
@@ -331,29 +342,21 @@ export async function* streamClientMessage(
     }
     if (!turn.calls.length || round >= FILE_TOOL_ROUNDS || (!readFile && !canSearch)) {
       if (round >= FILE_TOOL_ROUNDS && turn.calls.length) {
-        yield {
-          type: 'content_block_start',
-          index,
-          content_block: {
-            type: 'text',
-            text: turn.calls.some((call) => call.function.name !== 'read_file')
-              ? `\n\n${searchFailureNote(new Error('工具调用轮数超过上限（8 轮）'))}`
-              : '\n\n文件工具调用轮数超过上限（8 轮），请缩小问题范围。',
-          },
-        }
-        yield { type: 'content_block_stop', index: index++ }
+        const failure = turn.calls.some((call) => call.function.name !== 'read_file')
+          ? searchFailureNote(new Error('工具调用轮数超过上限（8 轮）'))
+          : undefined
+        yield* note(
+          failure ? `\n\n${failure}` : '\n\n文件工具调用轮数超过上限（8 轮），请缩小问题范围。',
+          failure
+        )
       } else if (!turn.content.trim() || (search && turn.finish === 'tool_use')) {
-        yield {
-          type: 'content_block_start',
-          index,
-          content_block: {
-            type: 'text',
-            text: search
-              ? `\n\n${searchFailureNote(lastSearchError ?? new Error(canSearch ? '模型未返回可显示的回答' : '搜索工具调用轮数超过上限（3 轮）'))}`
-              : '\n\n模型未返回可显示的回答。',
-          },
-        }
-        yield { type: 'content_block_stop', index: index++ }
+        const failure = search
+          ? searchFailureNote(
+              lastSearchError ??
+                new Error(canSearch ? '模型未返回可显示的回答' : '搜索工具调用轮数超过上限（3 轮）')
+            )
+          : undefined
+        yield* note(failure ? `\n\n${failure}` : '\n\n模型未返回可显示的回答。', failure)
       }
       yield {
         type: 'message_delta',
@@ -457,12 +460,7 @@ export async function* streamClientMessage(
       }
       yield { type: 'content_block_stop', index: index++ }
       if (failure) {
-        yield {
-          type: 'content_block_start',
-          index,
-          content_block: { type: 'text', text: `\n\n> ${failure}\n\n` },
-        }
-        yield { type: 'content_block_stop', index: index++ }
+        yield* note(`\n\n> ${failure}\n\n`, failure)
       }
       messages.push({
         role: 'tool',

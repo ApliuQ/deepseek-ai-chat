@@ -311,6 +311,7 @@ export async function* streamOpenaiMessage(
   signal: AbortSignal
 ): AsyncGenerator<MessageStreamEvent> {
   const readFile = fileReaders.get(body)
+  const failureNotes = new Set<string>()
   if (readFile && !body.web_search_options) {
     yield* streamClientMessage(
       root,
@@ -327,7 +328,8 @@ export async function* streamOpenaiMessage(
       signal,
       () => invalidateSearchMethod(root, body.model),
       undefined,
-      readFile
+      readFile,
+      failureNotes
     )
     return
   }
@@ -392,7 +394,8 @@ export async function* streamOpenaiMessage(
                     throw new SearchRedirect(method)
                   }
                 },
-                readFile
+                readFile,
+                failureNotes
               )
       const terminal: MessageStreamEvent[] = []
       for await (const event of source) {
@@ -434,12 +437,16 @@ export async function* streamOpenaiMessage(
         yield { type: 'message_start', message: { id: '', model: body.model } }
         started = true
       }
-      yield {
-        type: 'content_block_start',
-        index: nextIndex,
-        content_block: { type: 'text', text: `\n\n> ${searchFailureNote(error)}\n\n` },
+      const failure = searchFailureNote(error)
+      if (!failureNotes.has(failure)) {
+        failureNotes.add(failure)
+        yield {
+          type: 'content_block_start',
+          index: nextIndex,
+          content_block: { type: 'text', text: `\n\n> ${failure}\n\n` },
+        }
+        yield { type: 'content_block_stop', index: nextIndex++ }
       }
-      yield { type: 'content_block_stop', index: nextIndex++ }
       if (tier === 'client') {
         yield { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null } }
         yield { type: 'message_stop' }
