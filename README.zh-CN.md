@@ -39,7 +39,7 @@ pnpm build
 
 在设置 → 数据管理中一起修改 API 基础地址和 API Key，确认校验成功后才会保存。默认地址是 `https://api.deepseek.com`，使用原有 DeepSeek 接口；其他地址启用 OpenAI 兼容模式（如 NewAPI）。地址末尾没有版本段时自动补 `/v1`。校验要求 `/models` 返回 JSON 模型列表。在聊天输入框右下角的下拉框中单选模型，列表按名称排序并自动刷新，选择结果会保存。
 
-OpenAI 模式支持流式对话、思考（`reasoning_effort`）、自动标题、内联图片、UTF-8 文本，以及在本地提取 DOCX、PPTX、PDF 文字。旧版 `.doc`/`.ppt` 或无法提取文字的附件按标准 `file` 部分发送，部分上游会忽略它们。开启搜索后，客户端提供 `web_search` 函数并调用兼容 NewAPI 的 `/tools/search` 接口（最多三次搜索、三轮调用），显示搜索结果与来源引用。该接口需要 `deepseek-search` 权限；失败时会显示原因，模型仍可在没有实时搜索的情况下回答。暂不模拟链接阅读工具。语音功能需要 `whisper-1` 和 `tts-1` 的访问权限，音色映射为 nova/onyx。
+OpenAI 模式支持流式对话、思考（`reasoning_effort`：关闭为 `none`，开启为 `high`）、自动标题、内联图片、UTF-8/GB18030 文本，以及本地提取 DOCX、PPTX、PDF 和 XLSX 文字。提取结果包含文件名，超过 1 MiB 时截断并注明；XLS 和其他不支持的二进制附件会显示说明，不再发送上游可能忽略的 base64 文件部分。XLSX 解析按需加载、异步解压，并限制解压大小与单元格数量。开启搜索后，`web_search` 和 `fetch_url` 使用无需密钥的 Exa 托管 MCP；网页读取失败时回退至 Jina Reader，均不携带模型服务的凭据。最多执行三次工具调用、三轮续答，沿用搜索结果和引用界面。错误与限流会显示在正文中并反馈给模型。公共服务有免费额度和可用性限制；搜索词及待读取的 URL 会发送给这些服务。语音功能需要 `whisper-1` 和 `tts-1` 的访问权限，音色映射为 nova/onyx。
 
 可用 iframe 嵌入应用。没有缓存连接时，默认地址为嵌入父页面的 origin 加 `/v1`（优先 `ancestorOrigins`，否则尝试 referrer）。直连或嵌入时都可用 `?baseUrl=https%3A%2F%2Fgateway.example%2Fv1`（也支持 `base_url`）覆盖未缓存的默认值；之后访问优先复用已校验保存的连接。API 必须允许浏览器 CORS 请求；若浏览器或 referrer 策略隐藏父页面来源，则回退到构建默认地址。请仅在可信父页面中嵌入，并在输入 API Key 前确认目标地址。
 

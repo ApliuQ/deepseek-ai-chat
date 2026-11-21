@@ -55,7 +55,8 @@ test('maps reminder, assistant text, thinking, search and continuation without D
     ],
   })
   const off = await api.buildOpenaiRequest([], 'custom-model', false, false, noFiles, signal())
-  assert.equal('reasoning_effort' in off, false)
+  assert.equal(off.reasoning_effort, 'none')
+  assert.equal(tools[1].function.name, 'fetch_url')
   assert.equal('web_search_options' in off, false)
   assert.equal('tools' in off, false)
   await assert.rejects(
@@ -123,8 +124,8 @@ test('inlines images, UTF-8 and Office files, falls back for binary and missing 
   assert.match(parts[1].text, /hello 世界/)
   assert.match(parts[2].text, /hello & office/)
   assert.match(parts[3].text, /two\nten/)
-  assert.equal(parts[4].type, 'file')
-  assert.match(parts[4].file.file_data, /^data:application\/octet-stream;base64,/)
+  assert.equal(parts[4].type, 'text')
+  assert.match(parts[4].text, /x.doc.*无法提取内容/)
   const missing = await api.buildOpenaiRequest(
     [{ role: 'user', content: [{ type: 'image', source: { file_id: 'absent' } }] }],
     'model',
@@ -143,11 +144,11 @@ test('inlines images, UTF-8 and Office files, falls back for binary and missing 
     { blob: new Blob([]), name: 'empty.txt', isImage: false },
     { blob: new Blob(['not zip']), name: 'broken.docx', isImage: false },
   ]) {
-    assert.equal((await api.toOpenaiFileParts(file, signal()))[0].type, 'file')
+    assert.match((await api.toOpenaiFileParts(file, signal()))[0].text, /无法提取内容/)
   }
 })
 
-test('PDF extraction cleans up and non-extractable PDFs fall back to standard files', async () => {
+test('PDF extraction cleans up and non-extractable PDFs produce readable notices', async () => {
   let destroyed = 0
   const api = await loadApi({
     pdfjs: {
@@ -185,7 +186,7 @@ test('PDF extraction cleans up and non-extractable PDFs fall back to standard fi
         signal()
       )
     )[0].type,
-    'file'
+    'text'
   )
 })
 

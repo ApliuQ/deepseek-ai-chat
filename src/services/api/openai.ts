@@ -2,11 +2,12 @@ import { ApiError, request } from './client.js'
 import { readServerSentEvents } from './sse.js'
 import type { MessageParam, MessageStreamEvent, MessageUsage, StopReason } from './types.js'
 import { toOpenaiFileParts, type LocalFileLoader, type OpenaiPart } from './openaiAttachments.js'
+import { fetchBrowserUrl, searchBrowserWeb } from './browserWeb.js'
 import {
   createLiteralToolFilter,
-  searchOpenaiWeb,
   searchQuery,
   WEB_SEARCH_TOOL,
+  FETCH_URL_TOOL,
   type OpenaiToolCall,
 } from './openaiSearch.js'
 import type { WebSearchResult } from './types.js'
@@ -24,8 +25,8 @@ export type OpenaiRequest = {
   messages: OpenaiMessage[]
   stream: true
   stream_options: { include_usage: true }
-  reasoning_effort?: 'high'
-  tools?: (typeof WEB_SEARCH_TOOL)[]
+  reasoning_effort?: 'high' | 'none'
+  tools?: (typeof WEB_SEARCH_TOOL | typeof FETCH_URL_TOOL)[]
   tool_choice?: 'auto' | 'none'
 }
 
@@ -35,7 +36,8 @@ export const buildOpenaiRequest = async (
   thinking: boolean,
   search: boolean,
   loadFile: LocalFileLoader,
-  signal: AbortSignal
+  signal: AbortSignal,
+  onAttachmentNotice?: (message: string) => void
 ): Promise<OpenaiRequest> => {
   if (!model) {
     throw new ApiError('protocol', 'Select a model in settings first')
@@ -62,7 +64,7 @@ export const buildOpenaiRequest = async (
         } else {
           const file = await loadFile(block.source.file_id)
           if (file) {
-            parts.push(...(await toOpenaiFileParts(file, signal)))
+            parts.push(...(await toOpenaiFileParts(file, signal, onAttachmentNotice)))
           }
         }
       }
@@ -83,8 +85,8 @@ export const buildOpenaiRequest = async (
     messages: mapped,
     stream: true,
     stream_options: { include_usage: true },
-    ...(thinking ? { reasoning_effort: 'high' as const } : {}),
-    ...(search ? { tools: [WEB_SEARCH_TOOL], tool_choice: 'auto' as const } : {}),
+    reasoning_effort: thinking ? 'high' : 'none',
+    ...(search ? { tools: [WEB_SEARCH_TOOL, FETCH_URL_TOOL], tool_choice: 'auto' as const } : {}),
   }
 }
 
@@ -359,6 +361,17 @@ export async function* streamOpenaiMessage(
           }
           if (event.type === 'content_block_stop') {
             const text = texts.get(mappedIndex) ?? ''
+            if (
+              [...sources.values()].some(
+                (source) => text.includes(source.url) && !cited.has(source.url)
+              )
+            ) {
+              yield {
+                type: 'content_block_delta',
+                index: mappedIndex,
+                delta: { type: 'text_delta', text: '\n\nSources: ' },
+              }
+            }
             for (const source of sources.values()) {
               if (text.includes(source.url) && !cited.has(source.url)) {
                 cited.add(source.url)
@@ -386,13 +399,13 @@ export async function* streamOpenaiMessage(
       }
     }
     if (!canSearch || !turn.calls.length) {
-      if (search && (turn.calls.length || turn.finish === 'tool_use')) {
+      if (!turn.content.trim() || (search && (turn.calls.length || turn.finish === 'tool_use'))) {
         yield {
           type: 'content_block_start',
           index,
           content_block: {
             type: 'text',
-            text: '\n\nSearch unavailable: the search round limit was reached or the model returned no usable call.',
+            text: '\n\nSearch unavailable: the search round limit was reached or the model returned no usable answer. Please try again or enable Search.',
           },
         }
         yield { type: 'content_block_stop', index: index++ }
@@ -442,7 +455,10 @@ export async function* streamOpenaiMessage(
           throw new ApiError('protocol', 'Search call limit reached')
         }
         searchCalls++
-        results = await searchOpenaiWeb(root, apiKey, query, signal)
+        results = await (call.function.name === 'fetch_url' ? fetchBrowserUrl : searchBrowserWeb)(
+          query,
+          signal
+        )
         for (const result of results) {
           sources.set(result.url, result)
         }

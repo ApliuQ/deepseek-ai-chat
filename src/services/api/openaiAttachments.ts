@@ -3,10 +3,19 @@ import { resizeUploadImage } from '../../utils/resizeUploadImage.js'
 export type OpenaiPart =
   | { type: 'text'; text: string }
   | { type: 'image_url'; image_url: { url: string } }
-  | { type: 'file'; file: { filename: string; file_data: string } }
 
 export type LocalFile = { blob: Blob; name: string; isImage: boolean; mimeType?: string }
 export type LocalFileLoader = (id: string) => Promise<LocalFile | undefined>
+
+const hasBinaryControls = (text: string) => {
+  for (const char of text) {
+    const code = char.charCodeAt(0)
+    if (code < 32 && code !== 9 && code !== 10 && code !== 13) {
+      return true
+    }
+  }
+  return false
+}
 
 const dataUrl = async (blob: Blob): Promise<string> => {
   const bytes = new Uint8Array(await blob.arrayBuffer())
@@ -72,7 +81,8 @@ const pdfText = async (blob: Blob, signal: AbortSignal): Promise<string> => {
 
 export const toOpenaiFileParts = async (
   { blob, name, isImage, mimeType }: LocalFile,
-  signal: AbortSignal
+  signal: AbortSignal,
+  onNotice: (message: string) => void = () => {}
 ): Promise<OpenaiPart[]> => {
   signal.throwIfAborted()
   if (isImage) {
@@ -86,19 +96,36 @@ export const toOpenaiFileParts = async (
   }
   const extension = name.split('.').at(-1)?.toLowerCase()
   let text = ''
+  let failure = ''
   try {
     if (extension === 'docx' || extension === 'pptx') {
       text = await officeText(blob, extension)
     } else if (extension === 'pdf') {
       text = await pdfText(blob, signal)
-    } else if (extension !== 'doc' && extension !== 'ppt') {
-      text = new TextDecoder('utf-8', { fatal: true }).decode(await blob.arrayBuffer())
-      if (text.includes('\0')) {
-        text = ''
+    } else if (extension === 'xlsx') {
+      text = await (await import('./openaiSpreadsheet.js')).spreadsheetText(blob, signal)
+    } else if (extension !== 'xls' && extension !== 'doc' && extension !== 'ppt') {
+      const bytes = new Uint8Array(await blob.slice(0, 4 * 1024 * 1024).arrayBuffer())
+      try {
+        text = new TextDecoder('utf-8', { fatal: true }).decode(bytes, {
+          stream: blob.size > bytes.byteLength,
+        })
+      } catch {
+        text = new TextDecoder('gb18030', { fatal: true }).decode(bytes, {
+          stream: blob.size > bytes.byteLength,
+        })
+      }
+      if (hasBinaryControls(text)) {
+        throw new Error('文件不是可读取的文本')
+      }
+      if (blob.size > bytes.byteLength) {
+        text += '\n[附件内容已截断：上限 1 MiB]'
       }
     }
-  } catch {
+  } catch (error) {
     signal.throwIfAborted()
+    text = ''
+    failure = error instanceof Error ? error.message : '文件解析失败'
   }
   signal.throwIfAborted()
   if (text.trim()) {
@@ -107,7 +134,21 @@ export const toOpenaiFileParts = async (
       .replaceAll('"', '&quot;')
       .replaceAll('<', '&lt;')
       .replaceAll('>', '&gt;')
-    return [{ type: 'text', text: `<file name="${filename}">\n${text}\n</file>` }]
+    const prefix = `<file name="${filename.slice(0, 1024)}">\n`
+    const suffix = '\n</file>'
+    const encoder = new TextEncoder()
+    const bytes = encoder.encode(text)
+    const limit = 1024 * 1024 - encoder.encode(prefix + suffix).byteLength
+    if (bytes.byteLength > limit) {
+      const notice = '\n[附件内容已截断：上限 1 MiB]'
+      text =
+        new TextDecoder().decode(bytes.subarray(0, limit - encoder.encode(notice).byteLength), {
+          stream: true,
+        }) + notice
+    }
+    return [{ type: 'text', text: `${prefix}${text}${suffix}` }]
   }
-  return [{ type: 'file', file: { filename: name, file_data: await dataUrl(blob) } }]
+  const notice = `附件 ${name}（${mimeType || blob.type || extension || '未知类型'}，${blob.size} bytes）无法提取内容。${extension === 'xls' ? '请另存为 xlsx/csv。' : '请转换为文本或受支持的文档格式。'}${failure}`
+  onNotice(notice)
+  return [{ type: 'text', text: notice }]
 }

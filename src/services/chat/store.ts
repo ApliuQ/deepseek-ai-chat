@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { showToast } from '../../components/base/toastState.js'
 import { createId } from '../../utils/id.js'
 import { ApiError, streamMessage } from '../api/client.js'
 import { buildOpenaiRequest, generateOpenaiTitle, streamOpenaiMessage } from '../api/openai.js'
@@ -1110,7 +1111,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
                 initial.thinking ?? false,
                 initial.search ?? false,
                 createLocalFileResolver(sessionId, localFiles),
-                controller.signal
+                controller.signal,
+                showToast
               ),
               controller.signal
             )

@@ -3,6 +3,25 @@ import test from 'node:test'
 import { collect, loadApi, sseBody } from './testHarness.mjs'
 
 const signal = () => new AbortController().signal
+const exaResponse = (results = []) =>
+  Response.json({
+    id: 1,
+    result: {
+      content: [
+        {
+          type: 'text',
+          text: results.length
+            ? results
+                .map(
+                  ({ title, url, snippet }) =>
+                    `Title: ${title}\nURL: ${url}\nHighlights:\n${snippet}`
+                )
+                .join('\n\n')
+            : 'No results found',
+        },
+      ],
+    },
+  })
 const frames = (deltas, finish = 'stop') =>
   [
     ...deltas.map((delta) => ({ choices: [{ delta }] })),
@@ -94,19 +113,17 @@ test('search loop posts documented payload, continues with tool results and emit
     fetch: async (url, init) => {
       const body = JSON.parse(init.body)
       calls.push({ url, body, headers: init.headers })
-      if (url.endsWith('/tools/search')) {
-        return Response.json({
-          results: [
-            {
-              title: 'DeepSeek',
-              url: 'https://www.deepseek.com/',
-              snippet: 'Latest official news',
-              site_name: 'DeepSeek',
-              date: '2026-11-21T00:00:00Z',
-            },
-            { url: 'javascript:alert(1)' },
-          ],
-        })
+      if (url === 'https://mcp.exa.ai/mcp') {
+        return exaResponse([
+          {
+            title: 'DeepSeek',
+            url: 'https://www.deepseek.com/',
+            snippet: 'Latest official news',
+            site_name: 'DeepSeek',
+            date: '2026-11-21T00:00:00Z',
+          },
+          { url: 'javascript:alert(1)' },
+        ])
       }
       return body.messages.some((m) => m.role === 'tool')
         ? response([{ content: 'See [DeepSeek](https://www.deepseek.com/).' }])
@@ -119,9 +136,11 @@ test('search loop posts documented payload, continues with tool results and emit
   assert.equal(calls.length, 3)
   assert.equal(calls[0].body.web_search_options, undefined)
   assert.equal(calls[0].body.tool_choice, 'auto')
-  assert.equal(calls[1].url, 'https://gateway.test/v1/tools/search')
-  assert.deepEqual(calls[1].body, { query: 'DeepSeek news', count: 10, need_content: false })
-  assert.equal(calls[1].headers.Authorization, 'Bearer key')
+  assert.equal(calls[1].url, 'https://mcp.exa.ai/mcp')
+  assert.equal(calls[1].body.params.name, 'web_search_exa')
+  assert.equal(calls[1].body.params.arguments.query, 'DeepSeek news')
+  assert.ok(calls[1].body.params.arguments.objective)
+  assert.equal(calls[1].headers.Authorization, undefined)
   const messages = calls[2].body.messages
   assert.equal(messages.at(-2).role, 'assistant')
   assert.equal(messages.at(-2).reasoning_content, 'Need current sources.')
@@ -137,6 +156,7 @@ test('search loop posts documented payload, continues with tool results and emit
   assert.equal(search.content[0].snippet, 'Latest official news')
   assert.ok(events.some((e) => e.content_block?.type === 'server_tool_use'))
   assert.ok(events.some((e) => e.delta?.citation?.url === 'https://www.deepseek.com/'))
+  assert.ok(events.some((e) => e.delta?.type === 'text_delta' && e.delta.text === '\n\nSources: '))
   assert.equal(events.filter((e) => e.type === 'message_start').length, 1)
   assert.equal(events.filter((e) => e.type === 'message_stop').length, 1)
   const indexes = events.filter((e) => e.type === 'content_block_start').map((e) => e.index)
@@ -151,16 +171,16 @@ test('search loop posts documented payload, continues with tool results and emit
 
 test('denied, malformed and empty searches still allow a final answer; aborts do not continue', async () => {
   for (const result of [
-    () => Response.json({ error: { message: 'No access to deepseek-search' } }, { status: 403 }),
+    () => Response.json({}, { status: 429 }),
     () => Response.json({ bad: [] }),
-    () => Response.json({ results: [] }),
+    () => exaResponse(),
   ]) {
     const calls = []
     const api = await loadApi({
       fetch: async (url, init) => {
         const body = JSON.parse(init.body)
         calls.push({ url, body })
-        if (url.endsWith('/tools/search')) {
+        if (url === 'https://mcp.exa.ai/mcp') {
           return result()
         }
         return body.messages.some((m) => m.role === 'tool')
@@ -182,8 +202,8 @@ test('denied, malformed and empty searches still allow a final answer; aborts do
         'unavailable'
       )
     }
-    if (text(events).includes('403')) {
-      assert.match(text(events), /No access to deepseek-search/)
+    if (text(events).includes('429')) {
+      assert.match(text(events), /rate limited/)
     }
   }
   const controller = new AbortController()
@@ -191,7 +211,7 @@ test('denied, malformed and empty searches still allow a final answer; aborts do
   const api = await loadApi({
     fetch: async (url) => {
       calls++
-      if (url.endsWith('/tools/search')) {
+      if (url === 'https://mcp.exa.ai/mcp') {
         controller.abort()
         throw new Error('aborted')
       }
@@ -224,9 +244,9 @@ test('split literal tool markup executes web_search, while malformed/unknown/dan
     let completions = 0
     const api = await loadApi({
       fetch: async (url) => {
-        if (url.endsWith('/tools/search')) {
+        if (url === 'https://mcp.exa.ai/mcp') {
           searches++
-          return Response.json({ results: [] })
+          return exaResponse()
         }
         completions++
         return completions === 1
@@ -252,9 +272,9 @@ test('search is off by default and search rounds are bounded even if the model k
   let finalBody
   const api = await loadApi({
     fetch: async (url, init) => {
-      if (url.endsWith('/tools/search')) {
+      if (url === 'https://mcp.exa.ai/mcp') {
         searches++
-        return Response.json({ results: [] })
+        return exaResponse()
       }
       completions++
       finalBody = JSON.parse(init.body)

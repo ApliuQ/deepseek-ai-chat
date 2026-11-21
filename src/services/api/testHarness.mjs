@@ -3,7 +3,12 @@ import { stripTypeScriptTypes } from 'node:module'
 import vm from 'node:vm'
 import { DOMParser } from '@xmldom/xmldom'
 
-export const loadApi = async ({ fetch = globalThis.fetch, pdfjs, clientSource } = {}) => {
+export const loadApi = async ({
+  fetch = globalThis.fetch,
+  pdfjs,
+  clientSource,
+  timer = setTimeout,
+} = {}) => {
   const context = vm.createContext({
     URL,
     URLSearchParams,
@@ -16,7 +21,7 @@ export const loadApi = async ({ fetch = globalThis.fetch, pdfjs, clientSource } 
     DOMParser,
     AbortController,
     ReadableStream,
-    setTimeout,
+    setTimeout: timer,
     clearTimeout,
     __API_ORIGIN__: 'https://api.deepseek.com',
     fetch,
@@ -102,6 +107,7 @@ export const loadApi = async ({ fetch = globalThis.fetch, pdfjs, clientSource } 
     ...speech.namespace,
     ...models.namespace,
     ...dialog.namespace,
+    ...modules.get(new URL('./browserWeb.ts', import.meta.url).href).namespace,
   }
 }
 
