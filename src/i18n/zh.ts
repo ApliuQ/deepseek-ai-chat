@@ -96,6 +96,7 @@ export const zh = {
   settingsTtsVoiceStella: '海星（女声）',
   settingsTtsVoiceTide: '暗潮（男声）',
   settingsLocation: '位置信息',
+  settingsLocationClear: '清除',
   settingsLocationProvince: '请选择省份/地区',
   settingsLocationCity: '请选择市',
   settingsLocationRegion: '请选择国家或地区',

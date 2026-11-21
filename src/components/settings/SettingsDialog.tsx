@@ -19,6 +19,7 @@ import { useIsMobile } from '../../app/viewport.js'
 import { useChatStore } from '../../services/chat/store.js'
 import { regionCodes, getRegionName, provinces } from '../../services/location.js'
 import {
+  getApiProvider,
   isChineseBrowser,
   setLocale,
   setLocation,
@@ -269,6 +270,14 @@ const LocationSetting = () => {
               onChange={(value) => setLocation({ region: value })}
             />
           )}
+          <Button
+            variant="outlined"
+            size="s"
+            disabled={!location}
+            onClick={() => setLocation(null)}
+          >
+            {t('settingsLocationClear')}
+          </Button>
         </div>
       }
     />
@@ -301,6 +310,10 @@ const LocaleSetting = () => {
 const TtsVoiceSetting = () => {
   const t = useTranslate()
   const ttsVoice = useSettings((state) => state.ttsVoice)
+  const baseUrl = useSettings((state) => state.baseUrl)
+  if (getApiProvider(baseUrl) !== 'deepseek') {
+    return null
+  }
   return (
     <SettingCell
       label={t('settingsTtsVoice')}
