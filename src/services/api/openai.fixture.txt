@@ -1,0 +1,14 @@
+: recorded chat completion event shape
+
+data: {"id":"chat-1","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Think first"},"finish_reason":null}]}
+
+data: {"id":"chat-1","choices":[{"index":0,"delta":{"content":"Hello "},"finish_reason":null}]}
+
+data: {"id":"chat-1","choices":[{"index":0,"delta":{"content":"world","annotations":[{"type":"url_citation","url_citation":{"url":"https://example.com","title":"Source"}}]},"finish_reason":null}]}
+
+data: {"id":"chat-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"chat-1","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":3}}}
+
+data: [DONE]
+

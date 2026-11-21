@@ -1,18 +1,32 @@
-import { useState } from 'react'
-import { IconEditOutline16 } from '../base/icons.js'
-import { useSettings } from '../../services/settings.js'
+import { useEffect, useState } from 'react'
+import { IconEditOutline16, IconEyeOutline16 } from '../base/icons.js'
+import { getDefaultBaseUrl, useSettings } from '../../services/settings.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { IconButton } from '../base/IconButton.js'
 import { useApiKeyForm } from './useApiKeyForm.js'
 import { useTranslate } from '../../i18n/index.js'
+import { useSettingsDialog } from './settingsDialogState.js'
 import styles from './Settings.module.css'
 
 /** API Key 的编辑状态：输入框与移动端底部的「确定」按钮共用 */
 export const useApiKeyEditor = () => {
   const apiKey = useSettings((state) => state.apiKey)
-  const [editing, setEditing] = useState(false)
-  const form = useApiKeyForm(() => setEditing(false))
-  return { apiKey, editing, setEditing, form, showInput: !apiKey || editing }
+  const failure = useSettingsDialog((state) => state.connectionFailure)
+  const [editing, setEditing] = useState(!!failure)
+  const [visible, setVisible] = useState(false)
+  const form = useApiKeyForm(() => {
+    setEditing(false)
+    setVisible(false)
+    useSettingsDialog.setState({ connectionFailure: null })
+  }, failure)
+  const { setFailure } = form
+  useEffect(() => {
+    if (failure) {
+      setEditing(true)
+      setFailure(failure)
+    }
+  }, [failure, setFailure])
+  return { apiKey, editing, setEditing, visible, setVisible, form, showInput: !apiKey || editing }
 }
 
 type ApiKeyEditor = ReturnType<typeof useApiKeyEditor>
@@ -21,65 +35,104 @@ type ApiKeyEditor = ReturnType<typeof useApiKeyEditor>
 export const ApiKeyField = ({ editor }: { editor: ApiKeyEditor }) => {
   const t = useTranslate()
   const isMobile = useIsMobile()
-  const { apiKey, editing, setEditing, form, showInput } = editor
+  const { apiKey, editing, setEditing, visible, setVisible, form, showInput } = editor
+  const baseUrl = useSettings((state) => state.baseUrl)
 
   return (
-    <div className={styles.cell}>
-      <div className={styles.apiKey}>
-        <div className={styles.label}>{t('apiKeyStart')}</div>
-        {apiKey && !editing ? (
-          <div className={styles.apiKeySaved}>
-            <span className={styles.apiKeyMask}>{'*'.repeat(apiKey.length)}</span>
-            <IconButton
-              tone="primary"
-              icon={<IconEditOutline16 />}
-              tooltip={t('apiKeyEdit')}
-              onClick={() => setEditing(true)}
-            />
-          </div>
-        ) : (
+    <>
+      <div className={styles.cell}>
+        <div className={styles.apiKey}>
+          <label className={styles.label} htmlFor="connection-base-url">
+            {t('baseUrlLabel')}
+          </label>
           <div className={styles.apiKeyInput}>
             <input
-              type="password"
-              placeholder={t('apiKeyPlaceholder')}
+              id="connection-base-url"
+              type="url"
+              placeholder={t('baseUrlPlaceholder')}
               autoComplete="off"
               spellCheck={false}
-              // 移动端打开设置时不弹键盘，点编辑后才聚焦
-              autoFocus={!isMobile || editing}
-              value={form.value}
-              onChange={(event) => form.setValue(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
-                  void form.submit()
-                }
-              }}
-              onBlur={() => {
-                // 修改时没输入就离开，回到已保存的状态
-                if (apiKey && !form.value.trim()) {
-                  setEditing(false)
-                }
-              }}
+              value={showInput ? form.baseUrl : baseUrl}
+              readOnly={!showInput}
+              disabled={form.verifying}
+              onChange={(event) => form.setBaseUrl(event.target.value)}
             />
-            {!isMobile && form.value.trim() ? (
-              <>
-                <span className={styles.divider} />
-                <button
-                  type="button"
-                  className={styles.confirm}
-                  disabled={form.verifying}
-                  // 保持输入框焦点
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => void form.submit()}
-                >
-                  {form.verifying ? t('apiKeyVerifying') : t('confirm')}
-                </button>
-              </>
-            ) : null}
+            <button
+              type="button"
+              className={styles.confirm}
+              disabled={form.verifying}
+              onClick={() => {
+                form.setBaseUrl(getDefaultBaseUrl())
+                setEditing(true)
+              }}
+            >
+              {t('baseUrlDefault')}
+            </button>
           </div>
-        )}
-        {showInput && form.error ? <div className={styles.error}>{form.error}</div> : null}
+        </div>
       </div>
-    </div>
+      <div className={styles.cell}>
+        <div className={styles.apiKey}>
+          <label className={styles.label} htmlFor="connection-api-key">
+            {t('apiKeyStart')}
+          </label>
+          {apiKey && !editing ? (
+            <div className={styles.apiKeySaved}>
+              <span className={styles.apiKeyMask}>{'*'.repeat(apiKey.length)}</span>
+              <IconButton
+                tone="primary"
+                icon={<IconEditOutline16 />}
+                tooltip={t('apiKeyEdit')}
+                onClick={() => setEditing(true)}
+              />
+            </div>
+          ) : (
+            <div className={styles.apiKeyInput}>
+              <input
+                id="connection-api-key"
+                type={visible ? 'text' : 'password'}
+                placeholder={t('apiKeyPlaceholder')}
+                autoComplete="off"
+                spellCheck={false}
+                disabled={form.verifying}
+                // 移动端打开设置时不弹键盘，点编辑后才聚焦
+                autoFocus={!isMobile || editing}
+                value={form.value}
+                onChange={(event) => form.setValue(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                    void form.submit()
+                  }
+                }}
+              />
+              <IconButton
+                icon={<IconEyeOutline16 hidden={visible} />}
+                tooltip={t(visible ? 'apiKeyHide' : 'apiKeyShow')}
+                aria-pressed={visible}
+                disabled={form.verifying}
+                onClick={() => setVisible(!visible)}
+              />
+              {!isMobile && form.value.trim() ? (
+                <>
+                  <span className={styles.divider} />
+                  <button
+                    type="button"
+                    className={styles.confirm}
+                    disabled={form.verifying}
+                    // 保持输入框焦点
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => void form.submit()}
+                  >
+                    {form.verifying ? t('apiKeyVerifying') : t('confirm')}
+                  </button>
+                </>
+              ) : null}
+            </div>
+          )}
+          {showInput && form.error ? <div className={styles.error}>{form.error}</div> : null}
+        </div>
+      </div>
+    </>
   )
 }
 

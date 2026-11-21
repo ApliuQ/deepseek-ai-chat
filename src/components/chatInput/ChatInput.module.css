@@ -305,6 +305,36 @@
   margin-left: auto;
 }
 
+.withModel {
+  .toggles {
+    flex: 0 0 auto;
+  }
+
+  .right {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
+@media not all and (min-width: 440px) {
+  .withModel {
+    gap: 4px;
+    padding: 8px;
+
+    .toggles {
+      gap: 6px;
+    }
+
+    .toggle {
+      padding: 0 8px;
+    }
+
+    .toggleLabel {
+      display: none;
+    }
+  }
+}
+
 .sendButton {
   display: flex;
   align-items: center;

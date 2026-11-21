@@ -7,6 +7,8 @@ import type { FilePurpose } from './api/types.js'
 import { loadFile } from './chat/db.js'
 import type { FileAttachment } from './chat/types.js'
 import { ACCEPT_FILE_EXTS } from './uploadExts.js'
+import { getApiProvider, useSettings } from './settings.js'
+import { toLocalFileRef } from './localFileRef.js'
 
 /** 允许上传的扩展名，按扩展名白名单过滤，清单见 uploadExts.ts */
 export const ACCEPTED_EXTS = ACCEPT_FILE_EXTS
@@ -174,6 +176,11 @@ export const uploadAttachment = (
   name: string,
   isImage: boolean
 ): Promise<string> => {
+  if (getApiProvider(useSettings.getState().baseUrl) === 'openai') {
+    const serverId = toLocalFileRef(id)
+    setTask(id, { status: 'done', serverId })
+    return Promise.resolve(serverId)
+  }
   const current = pending.get(id)
   if (current) {
     return current.promise

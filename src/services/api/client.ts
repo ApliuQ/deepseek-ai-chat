@@ -1,5 +1,12 @@
 import { translate, type TranslationMessage } from '../../i18n/index.js'
 import { resizeUploadImage } from '../../utils/resizeUploadImage.js'
+import {
+  getApiOrigin,
+  getApiProvider,
+  getOpenaiRoot,
+  normalizeBaseUrl,
+  useSettings,
+} from '../settings.js'
 import { readMessageEvent } from './parseEvent.js'
 import { readServerSentEvents } from './sse.js'
 import type {
@@ -10,10 +17,8 @@ import type {
   MessageStreamEvent,
 } from './types.js'
 
-/** 构建期 API 地址，默认 https://api.deepseek.com；本地开发支持开发服务器代理 */
-export const API_ORIGIN = __API_ORIGIN__
 /** Anthropic 兼容接口的前缀 */
-const ANTHROPIC_BASE_URL = `${API_ORIGIN}/anthropic/v1`
+const anthropicBaseUrl = () => `${getApiOrigin()}/anthropic/v1`
 /** 引用 Files API 上传的图片、调用 Anthropic 兼容 Files API 时必须携带 */
 const FILES_BETA = 'files-api-2025-04-14'
 
@@ -91,12 +96,37 @@ const anthropicHeaders = (apiKey: string, beta: boolean): Record<string, string>
 })
 
 /** 用 GET /models 校验 API Key（不产生费用） */
-export const verifyApiKey = async (apiKey: string, signal?: AbortSignal): Promise<void> => {
-  await request(`${API_ORIGIN}/models`, {
+export const verifyApiKey = async (
+  apiKey: string,
+  baseUrl = useSettings.getState().baseUrl,
+  signal?: AbortSignal
+): Promise<string[]> => {
+  const openai = getApiProvider(baseUrl) === 'openai'
+  const root = openai ? getOpenaiRoot(baseUrl) : normalizeBaseUrl(__API_ORIGIN__)
+  const response = await request(`${root}/models`, {
     method: 'GET',
     headers: { Authorization: `Bearer ${apiKey}` },
     signal,
   })
+  const body: unknown = await response.json().catch(() => {
+    throw new ApiError('protocol', 'Invalid models response')
+  })
+  if (typeof body !== 'object' || body === null || !('data' in body) || !Array.isArray(body.data)) {
+    throw new ApiError('protocol', 'Invalid models response')
+  }
+  const models = body.data.flatMap((model: unknown) =>
+    typeof model === 'object' &&
+    model !== null &&
+    'id' in model &&
+    typeof model.id === 'string' &&
+    model.id.trim()
+      ? [model.id]
+      : []
+  )
+  if (!models.length) {
+    throw new ApiError('protocol', 'No models available')
+  }
+  return [...new Set(models)]
 }
 
 /**
@@ -114,7 +144,7 @@ export const uploadFile = async (
     form.append('purpose', purpose)
   }
   form.append('file', purpose === null ? await resizeUploadImage(file, signal) : file)
-  const response = await request(`${ANTHROPIC_BASE_URL}/files`, {
+  const response = await request(`${anthropicBaseUrl()}/files`, {
     method: 'POST',
     headers: anthropicHeaders(apiKey, true),
     body: form,
@@ -125,7 +155,7 @@ export const uploadFile = async (
 
 /** DELETE /anthropic/v1/files/{file_id} */
 export const deleteFile = async (apiKey: string, fileId: string): Promise<void> => {
-  await request(`${ANTHROPIC_BASE_URL}/files/${encodeURIComponent(fileId)}`, {
+  await request(`${anthropicBaseUrl()}/files/${encodeURIComponent(fileId)}`, {
     method: 'DELETE',
     headers: anthropicHeaders(apiKey, true),
   })
@@ -147,7 +177,7 @@ export async function* streamMessage(
   body: CreateMessageRequest,
   signal: AbortSignal
 ): AsyncGenerator<MessageStreamEvent> {
-  const response = await request(`${ANTHROPIC_BASE_URL}/messages`, {
+  const response = await request(`${anthropicBaseUrl()}/messages`, {
     method: 'POST',
     headers: {
       ...anthropicHeaders(apiKey, hasFile(body)),
