@@ -37,7 +37,7 @@ pnpm build
 
 ## API 基础地址、OpenAI 兼容模式与嵌入
 
-在设置 → 数据管理中一起修改 API 基础地址和 API Key，确认校验成功后才会保存。默认地址是 `https://api.deepseek.com`，使用原有 DeepSeek 接口；其他地址启用 OpenAI 兼容模式（如 NewAPI）。地址末尾没有版本段时自动补 `/v1`。校验要求 `/models` 返回 JSON 模型列表，随后可在模型选择器中选择模型。
+在设置 → 数据管理中一起修改 API 基础地址和 API Key，确认校验成功后才会保存。默认地址是 `https://api.deepseek.com`，使用原有 DeepSeek 接口；其他地址启用 OpenAI 兼容模式（如 NewAPI）。地址末尾没有版本段时自动补 `/v1`。校验要求 `/models` 返回 JSON 模型列表。在聊天输入框右下角的下拉框中单选模型，列表按名称排序并自动刷新，选择结果会保存。
 
 OpenAI 模式支持流式对话、思考（`reasoning_effort`）、自动标题、内联图片、UTF-8 文本，以及在本地提取 DOCX、PPTX、PDF 文字。旧版 `.doc`/`.ppt` 或无法提取文字的附件按标准 `file` 部分发送，部分上游会忽略它们。搜索依赖上游实现 `web_search_options`，不会模拟 DeepSeek 服务端搜索或链接阅读工具。语音功能需要 `whisper-1` 和 `tts-1` 的访问权限，音色映射为 nova/onyx。
 

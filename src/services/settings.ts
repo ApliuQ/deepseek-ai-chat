@@ -178,6 +178,7 @@ export const setApiKey = (apiKey: string | null) => {
 }
 
 export const setConnection = (apiKey: string, baseUrl: string, models: string[]) => {
+  models = sortModelNames(models)
   const normalized = normalizeBaseUrl(baseUrl)
   const previous = useSettings.getState()
   const openaiModel = models.includes(previous.openaiModel)
@@ -192,6 +193,20 @@ export const setConnection = (apiKey: string, baseUrl: string, models: string[])
 export const setOpenaiModel = (openaiModel: string) => {
   write(KEYS.openaiModel, openaiModel)
   useSettings.setState({ openaiModel })
+}
+
+export const sortModelNames = (models: string[]): string[] =>
+  [...new Set(models)].sort((a, b) =>
+    a.localeCompare(b, 'en', { sensitivity: 'base', numeric: true })
+  )
+
+export const setOpenaiModels = (models: string[]) => {
+  const sorted = sortModelNames(models)
+  const selected = useSettings.getState().openaiModel
+  useSettings.setState({ openaiModels: sorted })
+  if (!sorted.includes(selected)) {
+    setOpenaiModel(sorted[0] ?? '')
+  }
 }
 
 export const setThinking = (thinking: boolean) => {

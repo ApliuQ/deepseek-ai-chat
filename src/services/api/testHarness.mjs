@@ -83,6 +83,9 @@ export const loadApi = async ({ fetch = globalThis.fetch, pdfjs, clientSource } 
   const speech = compile(new URL('./speech.ts', import.meta.url))
   await speech.link((specifier, parent) => resolve(specifier, parent.identifier))
   await speech.evaluate()
+  const models = compile(new URL('./models.ts', import.meta.url))
+  await models.link((specifier, parent) => resolve(specifier, parent.identifier))
+  await models.evaluate()
   const attachments = modules.get(new URL('./openaiAttachments.ts', import.meta.url).href)
   const settings = modules.get(new URL('../settings.ts', import.meta.url).href)
   const client = modules.get(new URL('./client.ts', import.meta.url).href)
@@ -92,6 +95,7 @@ export const loadApi = async ({ fetch = globalThis.fetch, pdfjs, clientSource } 
     ...settings?.namespace,
     ...client.namespace,
     ...speech.namespace,
+    ...models.namespace,
   }
 }
 

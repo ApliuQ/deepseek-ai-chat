@@ -37,7 +37,7 @@ The output is written to `dist/`. Deploy it to a static web server or open `dist
 
 ## Base URL, OpenAI compatibility and embedding
 
-In Settings → Data, edit the Base URL and API key together and confirm to verify and save them. The default is `https://api.deepseek.com`, using the original DeepSeek APIs. Other URLs enable OpenAI-compatible mode (for example, NewAPI); `/v1` is appended unless the URL already ends in a version segment. Verification requires a JSON `/models` list, and the Model selector lets you choose an available model.
+In Settings → Data, edit the Base URL and API key together and confirm to verify and save them. The default is `https://api.deepseek.com`, using the original DeepSeek APIs. Other URLs enable OpenAI-compatible mode (for example, NewAPI); `/v1` is appended unless the URL already ends in a version segment. Verification requires a JSON `/models` list. Choose a model from the name-sorted dropdown at the bottom-right of the chat composer; the selection is saved and the list refreshes automatically.
 
 OpenAI mode supports streaming chat, thinking (`reasoning_effort`), automatic titles, inline images, UTF-8 text, and text extracted locally from DOCX, PPTX and PDF files. Legacy `.doc`/`.ppt` and files without extractable text are sent as standard `file` parts, which some upstreams ignore. Search only works if the upstream implements `web_search_options`; DeepSeek server-side search/link-reading tools are not emulated. Speech requires access to `whisper-1` and `tts-1` (voices map to nova/onyx).
 

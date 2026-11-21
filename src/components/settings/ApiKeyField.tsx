@@ -1,8 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { IconEditOutline16 } from '../base/icons.js'
-import { getApiProvider, setOpenaiModel, useSettings } from '../../services/settings.js'
-import { verifyApiKey } from '../../services/api/client.js'
-import { Select } from '../base/Select.js'
+import { useSettings } from '../../services/settings.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { IconButton } from '../base/IconButton.js'
 import { useApiKeyForm } from './useApiKeyForm.js'
@@ -25,28 +23,6 @@ export const ApiKeyField = ({ editor }: { editor: ApiKeyEditor }) => {
   const isMobile = useIsMobile()
   const { apiKey, editing, setEditing, form, showInput } = editor
   const baseUrl = useSettings((state) => state.baseUrl)
-  const model = useSettings((state) => state.openaiModel)
-  const models = useSettings((state) => state.openaiModels)
-  const openai = getApiProvider(baseUrl) === 'openai'
-
-  useEffect(() => {
-    if (!openai || !apiKey || models.length) {
-      return
-    }
-    const controller = new AbortController()
-    void verifyApiKey(apiKey, baseUrl, controller.signal)
-      .then((ids) => {
-        if (controller.signal.aborted) {
-          return
-        }
-        useSettings.setState({ openaiModels: ids })
-        if (!ids.includes(useSettings.getState().openaiModel)) {
-          setOpenaiModel(ids[0] ?? '')
-        }
-      })
-      .catch(() => {})
-    return () => controller.abort()
-  }, [apiKey, baseUrl, openai, models.length])
 
   return (
     <>
@@ -124,22 +100,6 @@ export const ApiKeyField = ({ editor }: { editor: ApiKeyEditor }) => {
           {showInput && form.error ? <div className={styles.error}>{form.error}</div> : null}
         </div>
       </div>
-      {openai && apiKey && !showInput ? (
-        <div className={`${styles.cell} ${styles.row}`}>
-          <div className={styles.text}>
-            <div className={styles.label}>{t('openaiModelLabel')}</div>
-          </div>
-          <Select
-            ariaLabel={t('openaiModelLabel')}
-            value={model}
-            options={(models.length ? models : model ? [model] : []).map((id) => ({
-              value: id,
-              label: id,
-            }))}
-            onChange={setOpenaiModel}
-          />
-        </div>
-      ) : null}
     </>
   )
 }

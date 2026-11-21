@@ -305,6 +305,21 @@
   margin-left: auto;
 }
 
+@media not all and (min-width: 380px) {
+  .withModel {
+    gap: 4px;
+    padding: 8px;
+
+    .toggles {
+      gap: 6px;
+    }
+
+    .toggle {
+      padding: 0 8px;
+    }
+  }
+}
+
 .sendButton {
   display: flex;
   align-items: center;
