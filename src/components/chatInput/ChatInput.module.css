@@ -305,7 +305,18 @@
   margin-left: auto;
 }
 
-@media not all and (min-width: 380px) {
+.withModel {
+  .toggles {
+    flex: 0 0 auto;
+  }
+
+  .right {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
+@media not all and (min-width: 440px) {
   .withModel {
     gap: 4px;
     padding: 8px;
@@ -316,6 +327,10 @@
 
     .toggle {
       padding: 0 8px;
+    }
+
+    .toggleLabel {
+      display: none;
     }
   }
 }
