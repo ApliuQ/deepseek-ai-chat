@@ -5,12 +5,15 @@ import { setConnection, useSettings } from '../../services/settings.js'
 import { useTranslate } from '../../i18n/index.js'
 
 /** 输入 API Key 后先用 GET /models 校验，通过才保存 */
-export const useApiKeyForm = (onSaved?: () => void) => {
+export const useApiKeyForm = (
+  onSaved?: () => void,
+  initialFailure: { cause: unknown } | null = null
+) => {
   const t = useTranslate()
   const [value, setValue] = useState(() => useSettings.getState().apiKey ?? '')
   const [baseUrl, setBaseUrl] = useState(() => useSettings.getState().baseUrl)
   const [verifying, setVerifying] = useState(false)
-  const [failure, setFailure] = useState<{ cause: unknown } | null>(null)
+  const [failure, setFailure] = useState(initialFailure)
   const cause = failure?.cause
   const error =
     failure === null
@@ -56,5 +59,5 @@ export const useApiKeyForm = (onSaved?: () => void) => {
     }
   }
 
-  return { value, setValue, baseUrl, setBaseUrl, verifying, error, submit }
+  return { value, setValue, baseUrl, setBaseUrl, verifying, error, setFailure, submit }
 }

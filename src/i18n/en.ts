@@ -2,6 +2,9 @@ import type { zh } from './zh.js'
 
 export const en = {
   baseUrlLabel: 'Base URL',
+  baseUrlDefault: 'Default',
+  apiKeyShow: 'Show API Key',
+  apiKeyHide: 'Hide API Key',
   baseUrlPlaceholder: 'https://api.deepseek.com',
   baseUrlInvalid:
     'Enter an HTTP or HTTPS base URL without credentials, query parameters or a fragment.',

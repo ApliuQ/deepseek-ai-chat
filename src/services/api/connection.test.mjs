@@ -128,7 +128,8 @@ test('iframe origins, referrer fallback, query aliases and cache precedence', as
 
 test('verification uses live roots and Bearer auth; model choice is persisted', async () => {
   const api = await load()
-  await api.verifyApiKey('key')
+  api.respond(Response.json({ data: [{ id: 'deepseek-flash' }, { id: 'deepseek-v4-pro' }] }))
+  assert.deepEqual(Array.from(await api.verifyApiKey('key')), ['deepseek-flash', 'deepseek-v4-pro'])
   assert.equal(api.calls[0][0], 'https://api.deepseek.com/models')
   assert.equal(api.calls[0][1].headers.Authorization, 'Bearer key')
   api.respond(Response.json({ data: [{ id: 'model-a' }, { id: 'model-b' }] }))
@@ -146,11 +147,53 @@ test('verification uses live roots and Bearer auth; model choice is persisted', 
 
 test('empty, malformed and rejected model lists do not save a connection', async () => {
   const api = await load()
-  for (const body of [{ data: [] }, {}, { data: [{ id: 1 }] }]) {
-    api.respond(Response.json(body))
-    await assert.rejects(api.verifyApiKey('bad', 'https://other.test'))
+  for (const baseUrl of ['https://api.deepseek.com', 'https://other.test']) {
+    for (const body of [{ data: [] }, {}, { data: [{ id: 1 }] }]) {
+      api.respond(Response.json(body))
+      await assert.rejects(api.verifyApiKey('bad', baseUrl), { kind: 'protocol' })
+    }
+    api.respond(new Response('not JSON'))
+    await assert.rejects(api.verifyApiKey('bad', baseUrl), { kind: 'protocol' })
   }
   api.respond(new Response('unauthorized', { status: 401 }))
   await assert.rejects(api.verifyApiKey('bad', 'https://other.test'), { status: 401 })
   assert.equal(api.cache.size, 0)
+})
+
+test('default URL ignores cached and query URLs, derives iframe parents without saving', async () => {
+  for (const [context, expected] of [
+    [{}, 'https://api.deepseek.com'],
+    [{ embedded: true, ancestor: 'https://parent.test:8091' }, 'https://parent.test:8091/v1'],
+    [{ embedded: true, referrer: 'https://referrer.test/iframe' }, 'https://referrer.test/v1'],
+    [{ embedded: true, referrer: 'invalid' }, 'https://api.deepseek.com'],
+  ]) {
+    const api = await load({
+      ...context,
+      search: '?baseUrl=https%3A%2F%2Fquery.test',
+      saved: { 'chat-demo:base-url': 'https://cached.test' },
+    })
+    assert.equal(api.getDefaultBaseUrl(), expected)
+    assert.equal(api.cache.get('chat-demo:base-url'), 'https://cached.test')
+    assert.equal(api.useSettings.getState().baseUrl, 'https://cached.test')
+    assert.equal(api.calls.length, 0)
+  }
+})
+
+test('DeepSeek selection defaults, persists separately and falls back when absent from the list', async () => {
+  const api = await load({ saved: { 'chat-demo:openai-model': 'openai-model' } })
+  assert.equal(api.useSettings.getState().deepseekModel, 'deepseek-flash')
+  api.setDeepseekModel('deepseek-v4-pro')
+  assert.equal(api.cache.get('chat-demo:deepseek-model'), 'deepseek-v4-pro')
+  api.setConnection('key', 'https://api.deepseek.com', ['deepseek-v4-pro', 'deepseek-flash'])
+  assert.equal(api.useSettings.getState().deepseekModel, 'deepseek-v4-pro')
+  assert.equal(api.useSettings.getState().openaiModel, 'openai-model')
+  assert.equal(api.cache.get('chat-demo:openai-model'), 'openai-model')
+  const restored = await load({ saved: Object.fromEntries(api.cache) })
+  assert.equal(restored.useSettings.getState().deepseekModel, 'deepseek-v4-pro')
+  restored.setDeepseekModels(['deepseek-flash'])
+  assert.equal(restored.useSettings.getState().deepseekModel, 'deepseek-flash')
+  assert.equal(restored.cache.get('chat-demo:deepseek-model'), 'deepseek-flash')
+  restored.setDeepseekModel('unavailable')
+  restored.setDeepseekModels(['another-model'])
+  assert.equal(restored.useSettings.getState().deepseekModel, 'deepseek-flash')
 })

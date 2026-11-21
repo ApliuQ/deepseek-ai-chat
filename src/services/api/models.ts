@@ -1,20 +1,22 @@
 import { verifyApiKey } from './client.js'
-import { getApiProvider, setOpenaiModels, useSettings } from '../settings.js'
+import { getApiProvider, setDeepseekModels, setOpenaiModels, useSettings } from '../settings.js'
 
 const MAX_AGE = 5 * 60 * 1000
 let cached: { baseUrl: string; apiKey: string; updatedAt: number } | undefined
 let pending: { baseUrl: string; apiKey: string; promise: Promise<void> } | undefined
 
-export const refreshOpenaiModels = (): Promise<void> => {
-  const { baseUrl, apiKey, openaiModels } = useSettings.getState()
-  if (!apiKey || getApiProvider(baseUrl) !== 'openai') {
+export const refreshModels = (): Promise<void> => {
+  const { baseUrl, apiKey, openaiModels, deepseekModels } = useSettings.getState()
+  const openai = getApiProvider(baseUrl) === 'openai'
+  const models = openai ? openaiModels : deepseekModels
+  if (!apiKey) {
     return Promise.resolve()
   }
   if (pending?.baseUrl === baseUrl && pending.apiKey === apiKey) {
     return pending.promise
   }
   if (
-    openaiModels.length &&
+    models.length &&
     cached?.baseUrl === baseUrl &&
     cached.apiKey === apiKey &&
     Date.now() - cached.updatedAt < MAX_AGE
@@ -27,7 +29,11 @@ export const refreshOpenaiModels = (): Promise<void> => {
       if (current.baseUrl !== baseUrl || current.apiKey !== apiKey) {
         return
       }
-      setOpenaiModels(models)
+      if (openai) {
+        setOpenaiModels(models)
+      } else {
+        setDeepseekModels(models)
+      }
       cached = { baseUrl, apiKey, updatedAt: Date.now() }
     })
     .finally(() => {

@@ -108,10 +108,9 @@ export const verifyApiKey = async (
     headers: { Authorization: `Bearer ${apiKey}` },
     signal,
   })
-  if (!openai) {
-    return []
-  }
-  const body: unknown = await response.json()
+  const body: unknown = await response.json().catch(() => {
+    throw new ApiError('protocol', 'Invalid models response')
+  })
   if (typeof body !== 'object' || body === null || !('data' in body) || !Array.isArray(body.data)) {
     throw new ApiError('protocol', 'Invalid models response')
   }

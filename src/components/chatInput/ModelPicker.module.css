@@ -1,7 +1,8 @@
 .picker {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
-  max-width: 280px;
+  width: max-content;
+  max-width: 300px;
   margin-left: auto;
 }
 

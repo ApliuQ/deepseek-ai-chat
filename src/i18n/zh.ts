@@ -1,5 +1,8 @@
 export const zh = {
   baseUrlLabel: 'API 基础地址',
+  baseUrlDefault: '默认',
+  apiKeyShow: '显示 API Key',
+  apiKeyHide: '隐藏 API Key',
   baseUrlPlaceholder: 'https://api.deepseek.com',
   baseUrlInvalid: '请输入 HTTP 或 HTTPS 地址，不含凭据、查询参数或片段。',
   openaiModelLabel: '模型',

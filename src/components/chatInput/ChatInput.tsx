@@ -7,7 +7,7 @@ import {
   IconStopFill16,
   IconThinkOutline14,
 } from '../base/icons.js'
-import { getApiProvider, setSearch, setThinking, useSettings } from '../../services/settings.js'
+import { setSearch, setThinking, useSettings } from '../../services/settings.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { sendMessage, stopReply, useChatStore } from '../../services/chat/store.js'
 import {
@@ -54,7 +54,6 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const importingHistory = useChatStore((state) => state.importingHistory)
   const isMobile = useIsMobile()
   const search = useSettings((state) => state.search)
-  const openai = useSettings((state) => getApiProvider(state.baseUrl) === 'openai')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const togglesRef = useRef<HTMLDivElement>(null)
@@ -201,7 +200,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
           {`${text}\n`}
         </div>
       </div>
-      <div className={clsx(styles.functionRow, openai && styles.withModel)}>
+      <div className={clsx(styles.functionRow, styles.withModel)}>
         {/* 深度思考 / 智能搜索开关，tooltip 在按钮上方 */}
         <div ref={togglesRef} className={styles.toggles}>
           <Tooltip content={t('deactivatedThinkTooltip')}>

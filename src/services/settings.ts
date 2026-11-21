@@ -13,6 +13,8 @@ type Settings = {
   baseUrl: string
   openaiModel: string
   openaiModels: string[]
+  deepseekModel: string
+  deepseekModels: string[]
   locale: Locale
   themePreference: ThemePreference
   location: UserLocation | null
@@ -26,6 +28,7 @@ const KEYS = {
   apiKey: 'chat-demo:api-key',
   baseUrl: 'chat-demo:base-url',
   openaiModel: 'chat-demo:openai-model',
+  deepseekModel: 'chat-demo:deepseek-model',
   locale: 'chat-demo:locale',
   location: 'chat-demo:location',
   themePreference: 'chat-demo:theme-preference',
@@ -112,17 +115,8 @@ export const getApiOrigin = (): string => {
   return getApiProvider(baseUrl) === 'deepseek' ? normalizeBaseUrl(__API_ORIGIN__) : baseUrl
 }
 
-const initialBaseUrl = (): string => {
-  const saved = read(KEYS.baseUrl)
-  if (saved) {
-    return saved
-  }
+export const getDefaultBaseUrl = (): string => {
   if (typeof window !== 'undefined') {
-    const params = new URLSearchParams(window.location.search)
-    const explicit = params.get('baseUrl') || params.get('base_url')
-    if (explicit?.trim()) {
-      return normalizeBaseUrl(explicit)
-    }
     if (window.self !== window.top) {
       try {
         const parent = window.location.ancestorOrigins?.[0] || new URL(document.referrer).origin
@@ -137,11 +131,28 @@ const initialBaseUrl = (): string => {
   return __API_ORIGIN__
 }
 
+const initialBaseUrl = (): string => {
+  const saved = read(KEYS.baseUrl)
+  if (saved) {
+    return saved
+  }
+  if (typeof window !== 'undefined') {
+    const params = new URLSearchParams(window.location.search)
+    const explicit = params.get('baseUrl') || params.get('base_url')
+    if (explicit?.trim()) {
+      return normalizeBaseUrl(explicit)
+    }
+  }
+  return getDefaultBaseUrl()
+}
+
 export const useSettings = create<Settings>(() => ({
   apiKey: read(KEYS.apiKey),
   baseUrl: initialBaseUrl(),
   openaiModel: read(KEYS.openaiModel) ?? '',
   openaiModels: [],
+  deepseekModel: read(KEYS.deepseekModel) || 'deepseek-flash',
+  deepseekModels: [],
   locale: initialLocale(),
   location: initialLocation(),
   themePreference: initialThemePreference(),
@@ -178,16 +189,29 @@ export const setApiKey = (apiKey: string | null) => {
 }
 
 export const setConnection = (apiKey: string, baseUrl: string, models: string[]) => {
-  models = sortModelNames(models)
   const normalized = normalizeBaseUrl(baseUrl)
-  const previous = useSettings.getState()
-  const openaiModel = models.includes(previous.openaiModel)
-    ? previous.openaiModel
-    : (models[0] ?? '')
   write(KEYS.apiKey, apiKey)
   write(KEYS.baseUrl, normalized)
-  write(KEYS.openaiModel, openaiModel)
-  useSettings.setState({ apiKey, baseUrl: normalized, openaiModel, openaiModels: models })
+  useSettings.setState({ apiKey, baseUrl: normalized })
+  if (getApiProvider(normalized) === 'deepseek') {
+    setDeepseekModels(models)
+  } else {
+    setOpenaiModels(models)
+  }
+}
+
+export const setDeepseekModel = (deepseekModel: string) => {
+  write(KEYS.deepseekModel, deepseekModel)
+  useSettings.setState({ deepseekModel })
+}
+
+export const setDeepseekModels = (models: string[]) => {
+  const sorted = sortModelNames(models)
+  const selected = useSettings.getState().deepseekModel
+  useSettings.setState({ deepseekModels: sorted })
+  if (!sorted.includes(selected)) {
+    setDeepseekModel('deepseek-flash')
+  }
 }
 
 export const setOpenaiModel = (openaiModel: string) => {
