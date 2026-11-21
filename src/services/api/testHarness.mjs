@@ -3,7 +3,7 @@ import { stripTypeScriptTypes } from 'node:module'
 import vm from 'node:vm'
 import { DOMParser } from '@xmldom/xmldom'
 
-export const loadApi = async ({ fetch = globalThis.fetch, pdfjs, clientSource } = {}) => {
+export const loadApi = async ({ fetch = globalThis.fetch, pdfjs, clientSource, storage } = {}) => {
   const context = vm.createContext({
     URL,
     URLSearchParams,
@@ -18,6 +18,7 @@ export const loadApi = async ({ fetch = globalThis.fetch, pdfjs, clientSource } 
     ReadableStream,
     setTimeout,
     clearTimeout,
+    localStorage: storage ?? { getItem: () => null, setItem: () => {}, removeItem: () => {} },
     __API_ORIGIN__: 'https://api.deepseek.com',
     fetch,
   })
@@ -95,6 +96,11 @@ export const loadApi = async ({ fetch = globalThis.fetch, pdfjs, clientSource } 
   const settings = modules.get(new URL('../settings.ts', import.meta.url).href)
   const client = modules.get(new URL('./client.ts', import.meta.url).href)
   return {
+    ...modules.get(new URL('./browserWeb.ts', import.meta.url).href)?.namespace,
+    ...modules.get(new URL('./openaiSearch.ts', import.meta.url).href)?.namespace,
+    ...modules.get(new URL('./openaiClientSearch.ts', import.meta.url).href)?.namespace,
+    ...modules.get(new URL('./openaiResponses.ts', import.meta.url).href)?.namespace,
+    ...modules.get(new URL('./openaiSearchCapabilities.ts', import.meta.url).href)?.namespace,
     ...openai.namespace,
     ...attachments.namespace,
     ...settings?.namespace,

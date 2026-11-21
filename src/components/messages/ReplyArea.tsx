@@ -64,10 +64,22 @@ export const ReplyArea = memo(function ReplyArea({
   streaming: boolean
   hasResponse: boolean
 }) {
-  useTranslate()
+  const t = useTranslate()
   const [open, setOpen] = useState(true)
   const titleActive = streaming && !hasResponse
   useTicker(titleActive, 1000)
+  if (view.steps.length === 0 && message.search && streaming && !hasResponse) {
+    return (
+      <div className={styles.area}>
+        <div className={styles.title}>
+          <span className={styles.titleIcon}>
+            <IconSearchOutline16 />
+          </span>
+          <span className={clsx(styles.titleText, styles.shimmer)}>{t('deepSearchSearching')}</span>
+        </div>
+      </div>
+    )
+  }
   if (view.steps.length === 0 && !(message.thinking && streaming)) {
     return null
   }

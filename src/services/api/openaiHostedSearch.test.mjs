@@ -57,7 +57,7 @@ test('hosted search sends web_search_options only when enabled and preserves ups
       },
     })
     const events = await collect(
-      api.streamOpenaiMessage(
+      api.streamChatMessage(
         'https://gateway.test/v1',
         'key',
         await request(api, search),
@@ -100,7 +100,7 @@ test('split pseudo-tool markup is stripped, never executed, and cannot leave an 
         },
       })
       const events = await collect(
-        api.streamOpenaiMessage(
+        api.streamChatMessage(
           'https://gateway.test/v1',
           'key',
           await request(api, search),
@@ -125,7 +125,7 @@ test('stripping preserves surrounding answers, including multiple split markup b
       ),
   })
   const events = await collect(
-    api.streamOpenaiMessage('https://gateway.test/v1', 'key', await request(api, true), signal())
+    api.streamChatMessage('https://gateway.test/v1', 'key', await request(api, true), signal())
   )
   assert.equal(answer(events), 'Before  after .')
 })
@@ -153,7 +153,7 @@ test('unexpected structured calls are not executed and finish with a readable no
     },
   })
   const events = await collect(
-    api.streamOpenaiMessage('https://gateway.test/v1', 'key', await request(api, true), signal())
+    api.streamChatMessage('https://gateway.test/v1', 'key', await request(api, true), signal())
   )
   assert.equal(calls, 1)
   assert.match(answer(events), /当前模型或渠道未执行搜索/)
@@ -174,7 +174,7 @@ test('hosted search HTTP and malformed-response errors surface without another r
     })
     await assert.rejects(
       collect(
-        api.streamOpenaiMessage(
+        api.streamChatMessage(
           'https://gateway.test/v1',
           'key',
           await request(api, true),

@@ -3,10 +3,17 @@ import { readServerSentEvents } from './sse.js'
 import type { MessageParam, MessageStreamEvent, MessageUsage, StopReason } from './types.js'
 import { toOpenaiFileParts, type LocalFileLoader, type OpenaiPart } from './openaiAttachments.js'
 import { createLiteralToolFilter } from './openaiSearch.js'
+import { WEB_SEARCH_TOOL, FETCH_URL_TOOL, type OpenaiToolCall } from './openaiSearch.js'
+import { streamClientMessage } from './openaiClientSearch.js'
+import { buildResponsesRequest, responsesStreamEvents } from './openaiResponses.js'
+import { detectSearchMethod, invalidateSearchMethod } from './openaiSearchCapabilities.js'
 
 export type OpenaiMessage = {
-  role: 'system' | 'user' | 'assistant'
+  role: 'system' | 'user' | 'assistant' | 'tool'
   content: string | OpenaiPart[]
+  tool_calls?: OpenaiToolCall[]
+  tool_call_id?: string
+  reasoning_content?: string
 }
 
 export type OpenaiRequest = {
@@ -16,6 +23,8 @@ export type OpenaiRequest = {
   stream_options: { include_usage: true }
   reasoning_effort?: 'high' | 'none'
   web_search_options?: Record<string, never>
+  tools?: (typeof WEB_SEARCH_TOOL | typeof FETCH_URL_TOOL)[]
+  tool_choice?: 'auto' | 'none'
 }
 
 export const buildOpenaiRequest = async (
@@ -218,7 +227,7 @@ export async function* openaiStreamEvents(
       }
       for (const annotation of citations) {
         const item = record(annotation)
-        const citation = record(item?.url_citation)
+        const citation = record(item?.url_citation) ?? item
         if (item?.type === 'url_citation' && typeof citation?.url === 'string') {
           yield {
             type: 'content_block_delta',
@@ -253,7 +262,7 @@ const completion = (root: string, apiKey: string, body: unknown, signal: AbortSi
     signal,
   })
 
-export async function* streamOpenaiMessage(
+export async function* streamChatMessage(
   root: string,
   apiKey: string,
   body: OpenaiRequest,
@@ -264,6 +273,126 @@ export async function* streamOpenaiMessage(
     throw new ApiError('protocol', 'Expected a chat completion event stream')
   }
   yield* openaiStreamEvents(response.body, body.model, signal)
+}
+
+export async function* streamOpenaiMessage(
+  root: string,
+  apiKey: string,
+  body: OpenaiRequest,
+  signal: AbortSignal
+): AsyncGenerator<MessageStreamEvent> {
+  if (!body.web_search_options) {
+    yield* streamChatMessage(root, apiKey, body, signal)
+    return
+  }
+  const method = await detectSearchMethod(root, apiKey, body.model, signal)
+  const tiers = ['chat', 'responses', 'client'] as const
+  let nextIndex = 0
+  let started = false
+  for (const tier of tiers.slice(tiers.indexOf(method))) {
+    const offset = nextIndex
+    const activeBlocks = new Set<number>()
+    try {
+      const source =
+        tier === 'chat'
+          ? streamChatMessage(root, apiKey, body, signal)
+          : tier === 'responses'
+            ? (async function* () {
+                const response = await request(`${root}/responses`, {
+                  method: 'POST',
+                  headers: {
+                    Authorization: `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify(buildResponsesRequest(body)),
+                  signal,
+                })
+                if (
+                  !response.body ||
+                  !response.headers.get('Content-Type')?.includes('text/event-stream')
+                ) {
+                  throw new ApiError('protocol', 'Expected a Responses event stream')
+                }
+                yield* responsesStreamEvents(response.body, body.model, signal)
+              })()
+            : streamClientMessage(
+                root,
+                apiKey,
+                {
+                  ...body,
+                  web_search_options: undefined,
+                  tools: [WEB_SEARCH_TOOL, FETCH_URL_TOOL],
+                  tool_choice: 'auto',
+                },
+                signal,
+                () => invalidateSearchMethod(root, body.model)
+              )
+      let searched = tier === 'client'
+      const terminal: MessageStreamEvent[] = []
+      for await (const event of source) {
+        if (event.type === 'message_start') {
+          if (!started) {
+            yield event
+          }
+          started = true
+        } else if (event.type === 'message_stop' || event.type === 'message_delta') {
+          terminal.push(event)
+        } else {
+          if (
+            tier === 'chat' &&
+            event.type === 'content_block_delta' &&
+            event.delta.type === 'citations_delta'
+          ) {
+            searched = true
+          }
+          if (
+            tier === 'responses' &&
+            event.type === 'content_block_start' &&
+            event.content_block.type === 'web_search_tool_result'
+          ) {
+            searched = true
+          }
+          if ('index' in event) {
+            nextIndex = Math.max(nextIndex, offset + event.index + 1)
+            if (event.type === 'content_block_start') {
+              activeBlocks.add(offset + event.index)
+            }
+            if (event.type === 'content_block_stop') {
+              activeBlocks.delete(offset + event.index)
+            }
+            yield { ...event, index: offset + event.index }
+          } else {
+            yield event
+          }
+        }
+      }
+      if (!searched) {
+        throw new ApiError('protocol', 'No hosted search evidence returned')
+      }
+      yield* terminal
+      return
+    } catch {
+      signal.throwIfAborted()
+      for (const index of activeBlocks) {
+        yield { type: 'content_block_stop', index }
+      }
+      invalidateSearchMethod(root, body.model)
+      if (tier === 'client') {
+        if (!started) {
+          yield { type: 'message_start', message: { id: '', model: body.model } }
+        }
+        yield {
+          type: 'content_block_start',
+          index: nextIndex,
+          content_block: { type: 'text', text: '\n\n当前模型不支持联网搜索' },
+        }
+        yield { type: 'content_block_stop', index: nextIndex }
+        yield { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null } }
+        yield { type: 'message_stop' }
+        return
+      }
+    }
+  }
 }
 
 export const generateOpenaiTitle = async (

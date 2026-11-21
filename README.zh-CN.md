@@ -39,7 +39,7 @@ pnpm build
 
 在设置 → 数据管理中一起修改 API 基础地址和 API Key，确认校验成功后才会保存。默认地址是 `https://api.deepseek.com`，使用原有 DeepSeek 接口；其他地址启用 OpenAI 兼容模式（如 NewAPI）。地址末尾没有版本段时自动补 `/v1`。校验要求 `/models` 返回 JSON 模型列表。在聊天输入框右下角的下拉框中单选模型，列表按名称排序并自动刷新，选择结果会保存。
 
-OpenAI 模式支持流式对话、思考（`reasoning_effort`：关闭为 `none`，开启为 `high`）、自动标题、内联图片、UTF-8/GB18030 文本，以及本地提取 DOCX、PPTX、PDF 和 XLSX 文字。提取结果包含文件名，超过 1 MiB 时截断并注明；XLS 和其他不支持的二进制附件会显示说明，不再发送上游可能忽略的 base64 文件部分。XLSX 解析按需加载、异步解压，并限制解压大小与单元格数量。开启搜索后，Chat Completions 请求携带 `web_search_options: {}`，由模型或渠道服务端执行联网搜索。浏览器不执行搜索工具，也不调用第三方搜索服务。上游返回的 URL 引用注解沿用现有引用界面。该能力需要模型或渠道支持；伪工具标记会被剥除，空回复会显示未执行搜索或未返回内容的说明。语音功能需要 `whisper-1` 和 `tts-1` 的访问权限，音色映射为 nova/onyx。
+OpenAI 模式支持流式对话、思考（`reasoning_effort`：关闭为 `none`，开启为 `high`）、自动标题、内联图片、UTF-8/GB18030 文本，以及本地提取 DOCX、PPTX、PDF 和 XLSX 文字。提取结果包含文件名，超过 1 MiB 时截断并注明；XLS 和其他不支持的二进制附件会显示说明，不再发送上游可能忽略的 base64 文件部分。XLSX 解析按需加载、异步解压，并限制解压大小与单元格数量。开启搜索后，先探测 Chat 服务端搜索（`web_search_options: {}`，必须返回 URL 引用），再探测 Responses 服务端搜索（`web_search`，必须返回已完成的搜索项）。按规范化接口地址和模型缓存能力 24 小时；不支持或运行时失败则降级到免密 Exa MCP 搜索/网页读取，读取失败时使用 Jina Reader，绝不向第三方发送 API Key 或用户凭证。客户端工具最多执行三轮、三次调用；限流或不可用时显示“当前模型不支持联网搜索”。Responses 的搜索步骤、引用、思考摘要和用量沿用现有界面，思考参数使用 `reasoning.effort: none/high`。伪工具标记会被剥除，回复不会留空。语音功能需要 `whisper-1` 和 `tts-1` 的访问权限，音色映射为 nova/onyx。
 
 可用 iframe 嵌入应用。没有缓存连接时，默认地址为嵌入父页面的 origin 加 `/v1`（优先 `ancestorOrigins`，否则尝试 referrer）。直连或嵌入时都可用 `?baseUrl=https%3A%2F%2Fgateway.example%2Fv1`（也支持 `base_url`）覆盖未缓存的默认值；之后访问优先复用已校验保存的连接。API 必须允许浏览器 CORS 请求；若浏览器或 referrer 策略隐藏父页面来源，则回退到构建默认地址。请仅在可信父页面中嵌入，并在输入 API Key 前确认目标地址。
 
