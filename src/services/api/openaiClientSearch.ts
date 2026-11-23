@@ -408,16 +408,29 @@ export async function* streamClientMessage(
         messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) })
         continue
       }
-      // 只有模型请求工具时才探测；允许路由层改用服务端搜索。
-      await beforeSearch?.()
       let query = ''
+      try {
+        query = searchQuery(call)
+      } catch (error) {
+        signal.throwIfAborted()
+        messages.push({
+          role: 'tool',
+          tool_call_id: call.id,
+          content: JSON.stringify({
+            error: error instanceof Error ? error.message : String(error),
+            instruction: 'Correct the tool arguments and retry the tool call.',
+          }),
+        })
+        continue
+      }
+      // 只有模型请求有效工具时才探测；允许路由层改用服务端搜索。
+      await beforeSearch?.()
       let results: WebSearchResult[] = []
       let failure = ''
       try {
         if (!canSearch || searchUnavailable || searchCalls >= 3) {
           throw lastSearchError ?? new Error('搜索工具调用轮数超过上限（3 轮）')
         }
-        query = searchQuery(call)
         yield {
           type: 'content_block_start',
           index,

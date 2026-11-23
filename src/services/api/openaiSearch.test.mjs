@@ -78,6 +78,122 @@ const text = (events) =>
     .map((e) => e.delta?.text ?? (e.content_block?.type === 'text' ? e.content_block.text : ''))
     .join('')
 
+test('long queries reach Exa unchanged and only real service failures show an unavailable note', async () => {
+  for (const query of ['q'.repeat(129), '搜'.repeat(200), '😀'.repeat(200)]) {
+    for (const status of [200, 400]) {
+      const searches = []
+      const histories = []
+      let unavailable = 0
+      const api = await loadApi({
+        fetch: async (url, init) => {
+          const body = JSON.parse(init.body)
+          if (url === 'https://mcp.exa.ai/mcp') {
+            searches.push(body.params.arguments.query)
+            return status === 200
+              ? exaResponse([{ title: 'Source', url: 'https://example.com', snippet: 'News' }])
+              : Response.json({ error: { message: 'Exa rejected this query' } }, { status })
+          }
+          histories.push(body.messages)
+          return body.messages.some((m) => m.role === 'tool')
+            ? response([{ content: 'Final answer.' }])
+            : response([call(query)], 'tool_calls')
+        },
+      })
+      const events = await collect(
+        api.streamClientMessage(
+          'https://gateway.test/v1',
+          'key',
+          await makeRequest(api),
+          signal(),
+          () => unavailable++
+        )
+      )
+      assert.deepEqual(searches, [query])
+      assert.equal(unavailable, status === 200 ? 0 : 1)
+      const tool = JSON.parse(histories[1].find((m) => m.role === 'tool').content)
+      if (status === 200) {
+        assert.doesNotMatch(text(events), /当前模型不支持联网搜索/)
+        assert.equal(tool.results[0].title, 'Source')
+      } else {
+        assert.match(text(events), /当前模型不支持联网搜索：HTTP 400: Exa rejected this query/)
+        assert.match(tool.error, /HTTP 400: Exa rejected this query/)
+      }
+      assert.match(text(events), /Final answer/)
+    }
+  }
+})
+
+test('invalid search arguments return tool errors and allow a corrected query without disabling search', async () => {
+  for (const [args, literal] of [
+    ['{"query":""}', false],
+    ['{"query":"  \\n  "}', false],
+    ['{', false],
+    ['{"query":null}', false],
+    ['{"query":7}', false],
+    ['{"query":""}', true],
+  ]) {
+    let searches = 0
+    let unavailable = 0
+    let beforeSearch = 0
+    const histories = []
+    const api = await loadApi({
+      fetch: async (url, init) => {
+        const body = JSON.parse(init.body)
+        if (url === 'https://mcp.exa.ai/mcp') {
+          searches++
+          assert.equal(body.params.arguments.query, 'correct query')
+          return exaResponse([{ title: 'Source', url: 'https://example.com', snippet: 'News' }])
+        }
+        histories.push(body)
+        if (histories.length === 1) {
+          const invalid = call()
+          invalid.tool_calls[0].function.arguments = args
+          return literal
+            ? response([
+                { content: `<tool_call>{"name":"web_search","arguments":${args}}</tool_call>` },
+              ])
+            : response([invalid], 'tool_calls')
+        }
+        if (histories.length === 2) {
+          assert.equal(searches, 0)
+          assert.equal(beforeSearch, 0)
+          assert.equal(unavailable, 0)
+          const tool = body.messages.find((m) => m.role === 'tool')
+          assert.equal(tool.tool_call_id, literal ? 'search_0_0' : 'call_search')
+          const result = JSON.parse(tool.content)
+          assert.ok(result.error)
+          assert.match(result.instruction, /retry/i)
+          assert.doesNotMatch(result.error, /当前模型不支持联网搜索/)
+          assert.ok(body.tools.some((t) => t.function.name === 'web_search'))
+          const corrected = call('correct query')
+          corrected.tool_calls[0].id = 'corrected_search'
+          return response([corrected], 'tool_calls')
+        }
+        return response([{ content: 'Corrected search succeeded.' }])
+      },
+    })
+    const events = await collect(
+      api.streamClientMessage(
+        'https://gateway.test/v1',
+        'key',
+        await makeRequest(api),
+        signal(),
+        () => unavailable++,
+        async () => {
+          beforeSearch++
+        }
+      )
+    )
+    assert.equal(searches, 1)
+    assert.equal(beforeSearch, 1)
+    assert.equal(unavailable, 0)
+    assert.equal(histories.length, 3)
+    assert.equal(events.filter((e) => e.content_block?.type === 'server_tool_use').length, 1)
+    assert.doesNotMatch(text(events), /当前模型不支持联网搜索/)
+    assert.match(text(events), /Corrected search succeeded/)
+  }
+})
+
 test('streamed indexed tool calls accumulate names, IDs and argument fragments', async () => {
   const api = await loadApi()
   const turn = { calls: [], content: '' }
