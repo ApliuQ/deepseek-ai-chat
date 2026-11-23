@@ -26,7 +26,7 @@ export const WEB_SEARCH_TOOL = {
     parameters: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'A search query of 1 to 128 Unicode characters.' },
+        query: { type: 'string', description: 'A non-empty search query.' },
       },
       required: ['query'],
       additionalProperties: false,
@@ -66,13 +66,8 @@ export const searchQuery = (call: OpenaiToolCall): string => {
     return publicWebUrl(url)
   }
   const query = typeof args === 'object' && args !== null && 'query' in args ? args.query : null
-  if (
-    call.function.name !== 'web_search' ||
-    typeof query !== 'string' ||
-    !query.trim() ||
-    Array.from(query.trim()).length > 128
-  ) {
-    throw new ApiError('protocol', 'web_search requires a query of 1 to 128 characters')
+  if (call.function.name !== 'web_search' || typeof query !== 'string' || !query.trim()) {
+    throw new ApiError('protocol', 'web_search requires a non-empty query')
   }
   return query.trim()
 }
@@ -109,7 +104,6 @@ export const createLiteralToolFilter = (calls: OpenaiToolCall[] = []) => {
               type: 'function',
               function: { name: value.name, arguments: JSON.stringify(args) },
             }
-            searchQuery(call)
             calls.push(call)
           }
         } catch {
