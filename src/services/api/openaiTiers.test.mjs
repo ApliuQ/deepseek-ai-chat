@@ -100,6 +100,39 @@ test('capabilities require evidence, probe in order and cache each root/model wi
   }
 })
 
+test('Chat Completions probe preserves search options when retrying without rejected token limits', async () => {
+  const calls = []
+  const api = await loadApi({
+    storage: storage(),
+    fetch: async (url, init) => {
+      assert.equal(url, 'https://gateway.test/v1/chat/completions')
+      calls.push(JSON.parse(init.body))
+      return calls.length === 1
+        ? Response.json(
+            {
+              error: {
+                message: "Unsupported parameter: 'max_tokens' is not supported with this model.",
+              },
+            },
+            { status: 400 }
+          )
+        : Response.json({
+            choices: [
+              { message: { annotations: [{ type: 'url_citation', url: 'https://example.com' }] } },
+            ],
+          })
+    },
+  })
+  assert.equal(
+    await api.detectSearchMethod('https://gateway.test/v1', 'key', 'm', signal()),
+    'chat'
+  )
+  const { max_completion_tokens: limit, ...rest } = calls[0]
+  assert.equal(limit, 512)
+  assert.deepEqual(rest.web_search_options, {})
+  assert.deepEqual(calls, [{ ...rest, max_completion_tokens: 512 }, rest])
+})
+
 test('concurrent probes dedupe; errors, 404 and incomplete search are unsupported; corrupt or denied storage is safe', async () => {
   let calls = 0
   const api = await loadApi({

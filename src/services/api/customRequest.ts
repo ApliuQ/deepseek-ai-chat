@@ -82,31 +82,34 @@ export const requestCustomModel = async (
 export const requestCustomModelWithTokenLimit = async (
   url: string,
   apiKey: string,
-  body: Record<string, unknown>,
+  body: Record<string, unknown> & { max_tokens?: never; max_completion_tokens?: never },
   limit: number,
   signal: AbortSignal
 ): Promise<Response> => {
-  try {
-    return await sendCustomModelRequest(url, apiKey, {
-      method: 'POST',
-      body: JSON.stringify({ ...body, max_completion_tokens: limit }),
-      signal,
-    })
-  } catch (error) {
-    signal.throwIfAborted()
-    if (
-      error instanceof ApiError &&
-      error.status === 400 &&
-      /\b(?:unsupported|unknown|unrecognized) parameter\s*:\s*['"`]?max_completion_tokens\b/i.test(
-        error.message
-      )
-    ) {
-      return requestCustomModel(url, apiKey, {
+  let field: 'max_completion_tokens' | 'max_tokens' | undefined = 'max_completion_tokens'
+  for (;;) {
+    try {
+      return await sendCustomModelRequest(url, apiKey, {
         method: 'POST',
-        body: JSON.stringify({ ...body, max_tokens: limit }),
+        body: JSON.stringify(field ? { ...body, [field]: limit } : body),
         signal,
       })
+    } catch (error) {
+      signal.throwIfAborted()
+      const rejected =
+        error instanceof ApiError && error.status === 400
+          ? error.message.match(
+              /\b(?:unsupported|unknown|unrecognized) parameter\s*:\s*['"`]?(max_completion_tokens|max_tokens)\b|\b(max_completion_tokens|max_tokens)['"`]?\s+is not supported\b/i
+            )
+          : null
+      if (!field || !rejected) {
+        throw customRequestError('customModelRequest', url, error, apiKey)
+      }
+      const rejectedField = (rejected[1] ?? rejected[2])?.toLowerCase()
+      field =
+        field === 'max_completion_tokens' && rejectedField === 'max_completion_tokens'
+          ? 'max_tokens'
+          : undefined
     }
-    throw customRequestError('customModelRequest', url, error, apiKey)
   }
 }

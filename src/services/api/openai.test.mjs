@@ -340,3 +340,52 @@ test('title generation retries with the legacy token limit only when the modern 
     }
   }
 })
+
+test('title generation omits both token limits after explicit rejections and stops on other errors', async () => {
+  const modern = "Unsupported parameter: 'max_completion_tokens' is not supported with this model."
+  const legacy = "Unsupported parameter: 'max_tokens' is not supported with this model."
+  for (const { errors, fields, succeeds } of [
+    { errors: [legacy], fields: [['max_completion_tokens'], []], succeeds: true },
+    {
+      errors: [modern, legacy],
+      fields: [['max_completion_tokens'], ['max_tokens'], []],
+      succeeds: true,
+    },
+    {
+      errors: [modern, 'bad request'],
+      fields: [['max_completion_tokens'], ['max_tokens']],
+      succeeds: false,
+    },
+    { errors: [legacy, legacy], fields: [['max_completion_tokens'], []], succeeds: false },
+  ]) {
+    const calls = []
+    const api = await loadApi({
+      fetch: async (_url, init) => {
+        const message = errors[calls.length]
+        const { max_completion_tokens, max_tokens, ...body } = JSON.parse(init.body)
+        calls.push({
+          body,
+          fields: Object.entries({ max_completion_tokens, max_tokens })
+            .filter(([, value]) => value !== undefined)
+            .map(([key]) => key),
+        })
+        return message
+          ? Response.json({ error: { message } }, { status: 400 })
+          : Response.json({ choices: [{ message: { content: 'Short title' } }] })
+      },
+    })
+    const title = api.generateOpenaiTitle('https://example.test/v1', 'key', 'm', 'q', 'a', signal())
+    if (succeeds) {
+      assert.equal(await title, 'Short title')
+    } else {
+      await assert.rejects(title, { kind: 'http', status: 400 })
+    }
+    assert.deepEqual(
+      calls.map((call) => call.fields),
+      fields
+    )
+    for (const call of calls) {
+      assert.deepEqual(call.body, calls[0].body)
+    }
+  }
+})
