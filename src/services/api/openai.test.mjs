@@ -289,7 +289,8 @@ test('HTTP errors surface and title generation is separate, small and reasoning 
   assert.equal(calls[0][0], 'https://example.test/v1/chat/completions')
   assert.equal(calls[0][1].stream, false)
   assert.equal(calls[0][1].reasoning_effort, 'none')
-  assert.equal(calls[0][1].max_tokens, 64)
+  assert.equal(calls[0][1].max_completion_tokens, 64)
+  assert.equal(calls[0][1].max_tokens, undefined)
   response = Response.json({ error: { message: 'denied' } }, { status: 403 })
   await assert.rejects(
     collect(api.streamOpenaiMessage('https://example.test/v1', 'key', { model: 'm' }, signal())),
@@ -302,4 +303,40 @@ test('HTTP errors surface and title generation is separate, small and reasoning 
   )
   response = new Response('<html>not models</html>')
   await assert.rejects(api.verifyApiKey('key', 'https://example.test/v1'))
+})
+
+test('title generation retries with the legacy token limit only when the modern limit is rejected', async () => {
+  for (const unrelated of [false, true]) {
+    const calls = []
+    const api = await loadApi({
+      fetch: async (_url, init) => {
+        calls.push(JSON.parse(init.body))
+        return calls.length === 1
+          ? Response.json(
+              {
+                error: {
+                  message: unrelated
+                    ? 'bad request'
+                    : "Unsupported parameter: 'max_completion_tokens' is not supported with this model.",
+                },
+              },
+              { status: 400 }
+            )
+          : Response.json({ choices: [{ message: { content: 'Short title' } }] })
+      },
+    })
+    const title = api.generateOpenaiTitle('https://example.test/v1', 'key', 'm', 'q', 'a', signal())
+    if (unrelated) {
+      await assert.rejects(title, { kind: 'http', status: 400 })
+      assert.equal(calls.length, 1)
+    } else {
+      assert.equal(await title, 'Short title')
+      const { max_completion_tokens: limit, ...rest } = calls[0]
+      assert.equal(limit, 64)
+      assert.deepEqual(calls, [
+        { ...rest, max_completion_tokens: 64 },
+        { ...rest, max_tokens: 64 },
+      ])
+    }
+  }
 })

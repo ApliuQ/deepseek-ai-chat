@@ -1,6 +1,10 @@
 import { translate } from '../../i18n/index.js'
 import { ApiError } from './client.js'
-import { customRequestError, requestCustomModel } from './customRequest.js'
+import {
+  customRequestError,
+  requestCustomModel,
+  requestCustomModelWithTokenLimit,
+} from './customRequest.js'
 import { readServerSentEvents } from './sse.js'
 import type { MessageParam, MessageStreamEvent, MessageUsage, StopReason } from './types.js'
 import { toOpenaiFileParts, type LocalFileLoader, type OpenaiPart } from './openaiAttachments.js'
@@ -518,13 +522,12 @@ export const generateOpenaiTitle = async (
   answer: string,
   signal: AbortSignal
 ): Promise<string> => {
-  const response = await completion(
-    root,
+  const response = await requestCustomModelWithTokenLimit(
+    `${root}/chat/completions`,
     apiKey,
     {
       model,
       stream: false,
-      max_tokens: 64,
       reasoning_effort: 'none',
       messages: [
         {
@@ -538,6 +541,7 @@ export const generateOpenaiTitle = async (
         },
       ],
     },
+    64,
     signal
   )
   const body = record(await response.json())

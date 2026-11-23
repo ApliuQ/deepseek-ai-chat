@@ -57,6 +57,10 @@ test('capabilities require evidence, probe in order and cache each root/model wi
         calls.push(url)
         const body = JSON.parse(init.body)
         assert.equal(body.stream, false)
+        if (url.endsWith('/chat/completions')) {
+          assert.equal(body.max_completion_tokens, 512)
+          assert.equal(body.max_tokens, undefined)
+        }
         return Response.json(
           url.endsWith('/responses')
             ? {

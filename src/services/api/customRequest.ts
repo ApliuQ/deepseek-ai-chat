@@ -60,18 +60,53 @@ export const customRequestError = (
   )
 }
 
+const sendCustomModelRequest = (url: string, apiKey: string, init: RequestInit) =>
+  request(url, {
+    ...init,
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+  })
+
 export const requestCustomModel = async (
   url: string,
   apiKey: string,
   init: RequestInit
 ): Promise<Response> => {
   try {
-    return await request(url, {
-      ...init,
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    })
+    return await sendCustomModelRequest(url, apiKey, init)
   } catch (error) {
     init.signal?.throwIfAborted()
+    throw customRequestError('customModelRequest', url, error, apiKey)
+  }
+}
+
+export const requestCustomModelWithTokenLimit = async (
+  url: string,
+  apiKey: string,
+  body: Record<string, unknown>,
+  limit: number,
+  signal: AbortSignal
+): Promise<Response> => {
+  try {
+    return await sendCustomModelRequest(url, apiKey, {
+      method: 'POST',
+      body: JSON.stringify({ ...body, max_completion_tokens: limit }),
+      signal,
+    })
+  } catch (error) {
+    signal.throwIfAborted()
+    if (
+      error instanceof ApiError &&
+      error.status === 400 &&
+      /\b(?:unsupported|unknown|unrecognized) parameter\s*:\s*['"`]?max_completion_tokens\b/i.test(
+        error.message
+      )
+    ) {
+      return requestCustomModel(url, apiKey, {
+        method: 'POST',
+        body: JSON.stringify({ ...body, max_tokens: limit }),
+        signal,
+      })
+    }
     throw customRequestError('customModelRequest', url, error, apiKey)
   }
 }
