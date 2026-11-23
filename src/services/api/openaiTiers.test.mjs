@@ -340,7 +340,8 @@ test('Responses failure falls through to client; Exa/Jina 429 always shows the r
       api.streamOpenaiMessage('https://gateway.test/v1', 'key', body, signal())
     )
     const text = events.map((e) => e.delta?.text ?? e.content_block?.text ?? '').join('')
-    assert.match(text, /当前模型不支持联网搜索/)
+    assert.match(text, /联网搜索（Exa）失败|读取网页失败/)
+    assert.doesNotMatch(text, /当前模型不支持联网搜索/)
     assert.match(text, /429/)
     assert.match(text, /Here is what I know/)
     assert.equal(chats, 2)
@@ -420,7 +421,7 @@ test('hosted answers without search do not fall through; failed client requests 
       assert.equal(store.getItem(key), null)
       assert.match(
         events.map((e) => e.content_block?.text ?? '').join(''),
-        /当前模型不支持联网搜索/
+        /请求模型接口失败：服务返回 HTTP 503/
       )
     } else {
       assert.ok(store.getItem(key))

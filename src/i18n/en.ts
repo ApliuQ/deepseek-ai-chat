@@ -78,6 +78,20 @@ export const en = {
   toolFindFailTooltip: 'No related content found',
   readingLink: 'Reading',
   commonNetworkErrorToast: 'Network Error. Please check your network status.',
+  customModelRequest: 'Model API request',
+  customExaSearch: 'Web search (Exa)',
+  customReadWebpage: 'Read webpage',
+  customRequestFailed: '{operation} failed: {reason}. Request URL: {url}',
+  customRequestUnknownUrl: 'invalid address',
+  customRequestHttpReason: 'the service returned HTTP {status}',
+  customRequestNetworkReason:
+    'the connection failed or the browser blocked the request. Check your connection and try again',
+  customRequestTimeoutReason: 'the request timed out. Please try again',
+  customRequestResponseReason: 'the service did not return a usable response. Please try again',
+  customSearchUnsupported: 'This model does not support web search',
+  customModelEmptyAnswer: 'The model did not return an answer to display. Please try again.',
+  customSearchRoundLimit:
+    'The search tool call limit ({count} rounds) was reached. Try narrowing your question.',
   replyInvalidApiKey:
     'The API Key is invalid or has been deleted. Please replace it and try again.',
   replyInsufficientBalance: 'Insufficient account balance. Please top up and try again.',

@@ -293,7 +293,12 @@ test('HTTP errors surface and title generation is separate, small and reasoning 
   response = Response.json({ error: { message: 'denied' } }, { status: 403 })
   await assert.rejects(
     collect(api.streamOpenaiMessage('https://example.test/v1', 'key', { model: 'm' }, signal())),
-    { kind: 'http', status: 403, message: 'denied' }
+    {
+      kind: 'http',
+      status: 403,
+      message:
+        '请求模型接口失败：服务返回 HTTP 403。请求地址：https://example.test/v1/chat/completions',
+    }
   )
   response = new Response('<html>not models</html>')
   await assert.rejects(api.verifyApiKey('key', 'https://example.test/v1'))

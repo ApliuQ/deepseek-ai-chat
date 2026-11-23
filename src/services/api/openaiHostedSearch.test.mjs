@@ -57,12 +57,7 @@ test('hosted search sends web_search_options only when enabled and preserves ups
       },
     })
     const events = await collect(
-      api.streamChatMessage(
-        'https://gateway.test/v1',
-        'key',
-        await request(api, search),
-        signal()
-      )
+      api.streamChatMessage('https://gateway.test/v1', 'key', await request(api, search), signal())
     )
     assert.equal(calls.length, 1)
     assert.equal(calls[0].body.reasoning_effort, 'none')
@@ -108,7 +103,8 @@ test('split pseudo-tool markup is stripped, never executed, and cannot leave an 
         )
       )
       assert.equal(calls, 1)
-      assert.match(answer(events), /当前模型或渠道未执行搜索/)
+      assert.match(answer(events), /模型未返回可显示的回答/)
+      assert.doesNotMatch(answer(events), /当前模型不支持联网搜索/)
       assert.doesNotMatch(answer(events), /tool_call|not JSON|"name"/)
     }
   }
@@ -156,7 +152,7 @@ test('unexpected structured calls are not executed and finish with a readable no
     api.streamChatMessage('https://gateway.test/v1', 'key', await request(api, true), signal())
   )
   assert.equal(calls, 1)
-  assert.match(answer(events), /当前模型或渠道未执行搜索/)
+  assert.match(answer(events), /模型未返回可显示的回答/)
   assert.equal(events.at(-2).delta.stop_reason, 'end_turn')
 })
 
@@ -174,12 +170,7 @@ test('hosted search HTTP and malformed-response errors surface without another r
     })
     await assert.rejects(
       collect(
-        api.streamChatMessage(
-          'https://gateway.test/v1',
-          'key',
-          await request(api, true),
-          signal()
-        )
+        api.streamChatMessage('https://gateway.test/v1', 'key', await request(api, true), signal())
       )
     )
     assert.equal(calls, 1)
