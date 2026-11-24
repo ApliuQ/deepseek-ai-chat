@@ -10,7 +10,7 @@ import type { WebSearchResult } from './types.js'
 
 import type { OpenaiRequest } from './openai.js'
 
-const SEARCH_TOOL_ROUNDS = 3
+const SEARCH_TOOL_ROUNDS = 10
 
 const record = (value: unknown): Record<string, unknown> | null =>
   typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null
@@ -251,11 +251,15 @@ export async function* streamClientMessage(
   let invalidSearch = false
   let completedSearch = false
   const roundLimit = () => translate('customSearchRoundLimit', { count: SEARCH_TOOL_ROUNDS })
+  const maxRounds = search
+    ? SEARCH_TOOL_ROUNDS + (readFile ? FILE_TOOL_ROUNDS : 0)
+    : FILE_TOOL_ROUNDS
   for (let round = 0; ; round++) {
     signal.throwIfAborted()
     const canSearch = search && searchCalls < SEARCH_TOOL_ROUNDS && !searchUnavailable
+    const canReadFile = !!readFile && round < FILE_TOOL_ROUNDS
     const tools = body.tools?.filter((tool) =>
-      tool.function.name === 'read_file' ? !!readFile && round < FILE_TOOL_ROUNDS : canSearch
+      tool.function.name === 'read_file' ? canReadFile : canSearch
     )
     const response = await completion(
       root,
@@ -342,18 +346,22 @@ export async function* streamClientMessage(
         }
       }
     }
-    if (!turn.calls.length || round >= FILE_TOOL_ROUNDS || (!readFile && !canSearch)) {
+    if (!turn.calls.length || round >= maxRounds || (!canReadFile && !canSearch)) {
       const requestedSearch = turn.calls.some((call) => call.function.name === 'web_search')
+      const requestedWebTool =
+        requestedSearch || turn.calls.some((call) => call.function.name === 'fetch_url')
       if (search && !completedSearch && !lastSearchFailure && (invalidSearch || requestedSearch)) {
         const failure = translate('customSearchUnsupported')
         yield* note(`\n\n> ${failure}\n\n`, failure)
-      } else if (round >= FILE_TOOL_ROUNDS && turn.calls.length) {
-        const failure = requestedSearch
-          ? lastSearchFailure || roundLimit()
-          : '文件工具调用轮数超过上限（8 轮），请缩小问题范围。'
-        yield* note(`\n\n${failure}\n\n`, failure)
-      } else if (search && requestedSearch && searchCalls >= SEARCH_TOOL_ROUNDS) {
+      } else if (
+        search &&
+        requestedWebTool &&
+        (round >= maxRounds || searchCalls >= SEARCH_TOOL_ROUNDS)
+      ) {
         const failure = lastSearchFailure || roundLimit()
+        yield* note(`\n\n${failure}\n\n`, failure)
+      } else if (readFile && round >= FILE_TOOL_ROUNDS && turn.calls.length && !requestedWebTool) {
+        const failure = '文件工具调用轮数超过上限（8 轮），请缩小问题范围。'
         yield* note(`\n\n${failure}\n\n`, failure)
       } else if (!turn.content.trim() || (search && turn.finish === 'tool_use')) {
         const failure = lastSearchFailure || translate('customModelEmptyAnswer')
@@ -387,6 +395,9 @@ export async function* streamClientMessage(
         try {
           if (!readFile) {
             throw new Error('本次请求未启用文件读取工具')
+          }
+          if (!canReadFile) {
+            throw new Error('文件工具调用轮数超过上限（8 轮），请缩小问题范围。')
           }
           result = await readFile(call, signal)
         } catch (error) {
