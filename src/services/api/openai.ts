@@ -1,12 +1,22 @@
-import { ApiError, request } from './client.js'
+import { translate } from '../../i18n/index.js'
+import { ApiError } from './client.js'
+import {
+  customRequestError,
+  requestCustomModel,
+  requestCustomModelWithTokenLimit,
+} from './customRequest.js'
 import { readServerSentEvents } from './sse.js'
 import type { MessageParam, MessageStreamEvent, MessageUsage, StopReason } from './types.js'
 import { toOpenaiFileParts, type LocalFileLoader, type OpenaiPart } from './openaiAttachments.js'
-import { createLiteralToolFilter } from './openaiSearch.js'
-import { WEB_SEARCH_TOOL, FETCH_URL_TOOL, type OpenaiToolCall } from './openaiSearch.js'
+import {
+  createLiteralToolFilter,
+  WEB_SEARCH_TOOL,
+  FETCH_URL_TOOL,
+  SearchNotExecuted,
+  type OpenaiToolCall,
+} from './openaiSearch.js'
 import { streamClientMessage } from './openaiClientSearch.js'
 import { createFileReader, READ_FILE_TOOL, type FileReaderTool } from './openaiFiles.js'
-import { searchFailureNote } from './openaiSearch.js'
 import { buildResponsesRequest, responsesStreamEvents } from './openaiResponses.js'
 import {
   cachedSearchMethod,
@@ -146,7 +156,8 @@ const stopReason = (reason: string): StopReason => {
 export async function* openaiStreamEvents(
   stream: ReadableStream<Uint8Array>,
   model: string,
-  signal: AbortSignal
+  signal: AbortSignal,
+  hostedSearch = false
 ): AsyncGenerator<MessageStreamEvent> {
   let started = false
   let index = -1
@@ -155,7 +166,10 @@ export async function* openaiStreamEvents(
   let finish: StopReason | undefined
   let usage: MessageUsage | undefined
   let hasAnswer = false
-  const filter = createLiteralToolFilter()
+  const literalCalls: OpenaiToolCall[] = []
+  const filter = createLiteralToolFilter(literalCalls)
+  const toolNames = new Map<number, string>()
+  let hasSearchCitation = false
   for await (const frame of readServerSentEvents(stream, signal)) {
     signal.throwIfAborted()
     if (frame.data.trim() === '[DONE]') {
@@ -166,13 +180,21 @@ export async function* openaiStreamEvents(
         yield { type: 'content_block_stop', index }
       }
       filter('', true)
+      if (
+        hostedSearch &&
+        !hasSearchCitation &&
+        ([...toolNames.values()].includes('web_search') ||
+          literalCalls.some((call) => call.function.name === 'web_search'))
+      ) {
+        throw new SearchNotExecuted()
+      }
       if (!hasAnswer) {
         yield {
           type: 'content_block_start',
           index: ++index,
           content_block: {
             type: 'text',
-            text: '当前模型或渠道未执行搜索，或未返回可显示的回答。请更换支持联网搜索的模型或渠道，或重试。',
+            text: translate('customModelEmptyAnswer'),
           },
         }
         yield { type: 'content_block_stop', index }
@@ -210,6 +232,15 @@ export async function* openaiStreamEvents(
       continue
     }
     const delta = record(choice.delta)
+    if (hostedSearch && Array.isArray(delta?.tool_calls)) {
+      for (const call of delta.tool_calls) {
+        const tool = record(call)
+        const name = record(tool?.function)?.name
+        if (typeof name === 'string' && typeof tool?.index === 'number') {
+          toolNames.set(tool.index, (toolNames.get(tool.index) ?? '') + name)
+        }
+      }
+    }
     const annotations = delta?.annotations
     for (const type of ['thinking', 'text'] as const) {
       const raw = delta?.[type === 'thinking' ? 'reasoning_content' : 'content']
@@ -252,6 +283,7 @@ export async function* openaiStreamEvents(
         const item = record(annotation)
         const citation = record(item?.url_citation) ?? item
         if (item?.type === 'url_citation' && typeof citation?.url === 'string') {
+          hasSearchCitation = true
           yield {
             type: 'content_block_delta',
             index,
@@ -278,9 +310,8 @@ export async function* openaiStreamEvents(
 }
 
 const completion = (root: string, apiKey: string, body: unknown, signal: AbortSignal) =>
-  request(`${root}/chat/completions`, {
+  requestCustomModel(`${root}/chat/completions`, apiKey, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     signal,
   })
@@ -289,13 +320,22 @@ export async function* streamChatMessage(
   root: string,
   apiKey: string,
   body: OpenaiRequest,
-  signal: AbortSignal
+  signal: AbortSignal,
+  hostedSearch = false
 ): AsyncGenerator<MessageStreamEvent> {
-  const response = await completion(root, apiKey, body, signal)
-  if (!response.body || !response.headers.get('Content-Type')?.includes('text/event-stream')) {
-    throw new ApiError('protocol', 'Expected a chat completion event stream')
+  try {
+    const response = await completion(root, apiKey, body, signal)
+    if (!response.body || !response.headers.get('Content-Type')?.includes('text/event-stream')) {
+      throw new ApiError('protocol', 'Expected a chat completion event stream')
+    }
+    yield* openaiStreamEvents(response.body, body.model, signal, hostedSearch)
+  } catch (error) {
+    signal.throwIfAborted()
+    if (error instanceof SearchNotExecuted) {
+      throw error
+    }
+    throw customRequestError('customModelRequest', `${root}/chat/completions`, error, apiKey)
   }
-  yield* openaiStreamEvents(response.body, body.model, signal)
 }
 
 class SearchRedirect extends Error {
@@ -343,36 +383,56 @@ export async function* streamOpenaiMessage(
   let needsDetection = cached === null
   let nextIndex = 0
   let started = false
-  while (remaining.length) {
-    const tier = remaining.shift()
+  let hostedSearchUnfulfilled = false
+  let firstAttempt = true
+  let retryWithoutSearch: SearchMethod | undefined
+  while (retryWithoutSearch || remaining.length) {
+    const withoutSearch = retryWithoutSearch !== undefined
+    const tier = retryWithoutSearch ?? remaining.shift()
     if (!tier) {
       break
     }
+    retryWithoutSearch = undefined
+    const mayRetryWithoutSearch = firstAttempt
+    firstAttempt = false
     const offset = nextIndex
     const activeBlocks = new Set<number>()
     try {
+      let searchCompleted = false
+      const onSearchCompleted = () => {
+        searchCompleted = true
+      }
       const source =
-        tier === 'chat'
-          ? streamChatMessage(root, apiKey, body, signal)
-          : tier === 'responses'
-            ? (async function* () {
-                const response = await request(`${root}/responses`, {
-                  method: 'POST',
-                  headers: {
-                    Authorization: `Bearer ${apiKey}`,
-                    'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify(buildResponsesRequest(body)),
-                  signal,
-                })
-                if (
-                  !response.body ||
-                  !response.headers.get('Content-Type')?.includes('text/event-stream')
-                ) {
-                  throw new ApiError('protocol', 'Expected a Responses event stream')
-                }
-                yield* responsesStreamEvents(response.body, body.model, signal)
-              })()
+        tier === 'responses'
+          ? (async function* () {
+              const response = await requestCustomModel(`${root}/responses`, apiKey, {
+                method: 'POST',
+                body: JSON.stringify(buildResponsesRequest(body, !withoutSearch)),
+                signal,
+              })
+              if (
+                !response.body ||
+                !response.headers.get('Content-Type')?.includes('text/event-stream')
+              ) {
+                throw new ApiError('protocol', 'Expected a Responses event stream')
+              }
+              yield* responsesStreamEvents(response.body, body.model, signal, onSearchCompleted)
+            })()
+          : tier === 'chat' || withoutSearch
+            ? streamChatMessage(
+                root,
+                apiKey,
+                withoutSearch
+                  ? {
+                      ...body,
+                      tools: undefined,
+                      tool_choice: undefined,
+                      web_search_options: undefined,
+                    }
+                  : body,
+                signal,
+                !withoutSearch
+              )
             : streamClientMessage(
                 root,
                 apiKey,
@@ -395,7 +455,8 @@ export async function* streamOpenaiMessage(
                   }
                 },
                 readFile,
-                failureNotes
+                failureNotes,
+                onSearchCompleted
               )
       const terminal: MessageStreamEvent[] = []
       for await (const event of source) {
@@ -421,6 +482,22 @@ export async function* streamOpenaiMessage(
           }
         }
       }
+      const notice = withoutSearch
+        ? translate('customSearchFallback')
+        : hostedSearchUnfulfilled && !searchCompleted && !failureNotes.size
+          ? translate('customSearchUnsupported')
+          : undefined
+      if (notice) {
+        yield {
+          type: 'content_block_start',
+          index: nextIndex,
+          content_block: {
+            type: 'text',
+            text: `\n\n> ${notice}\n\n`,
+          },
+        }
+        yield { type: 'content_block_stop', index: nextIndex }
+      }
       yield* terminal
       return
     } catch (error) {
@@ -433,11 +510,27 @@ export async function* streamOpenaiMessage(
         continue
       }
       invalidateSearchMethod(root, body.model)
+      if (
+        mayRetryWithoutSearch &&
+        !started &&
+        error instanceof ApiError &&
+        error.kind === 'http' &&
+        error.status === 400
+      ) {
+        retryWithoutSearch = tier
+        continue
+      }
+      if (!withoutSearch && error instanceof SearchNotExecuted) {
+        hostedSearchUnfulfilled = true
+        continue
+      }
+      const stop = tier === 'client' || (withoutSearch && started)
       if (!started) {
         yield { type: 'message_start', message: { id: '', model: body.model } }
         started = true
       }
-      const failure = searchFailureNote(error)
+      const endpoint = `${root}/${tier === 'responses' ? 'responses' : 'chat/completions'}`
+      const failure = customRequestError('customModelRequest', endpoint, error, apiKey).message
       if (!failureNotes.has(failure)) {
         failureNotes.add(failure)
         yield {
@@ -447,7 +540,7 @@ export async function* streamOpenaiMessage(
         }
         yield { type: 'content_block_stop', index: nextIndex++ }
       }
-      if (tier === 'client') {
+      if (stop) {
         yield { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null } }
         yield { type: 'message_stop' }
         return
@@ -464,13 +557,12 @@ export const generateOpenaiTitle = async (
   answer: string,
   signal: AbortSignal
 ): Promise<string> => {
-  const response = await completion(
-    root,
+  const response = await requestCustomModelWithTokenLimit(
+    `${root}/chat/completions`,
     apiKey,
     {
       model,
       stream: false,
-      max_tokens: 64,
       reasoning_effort: 'none',
       messages: [
         {
@@ -484,6 +576,7 @@ export const generateOpenaiTitle = async (
         },
       ],
     },
+    64,
     signal
   )
   const body = record(await response.json())

@@ -1,4 +1,5 @@
 import { request } from './client.js'
+import { requestCustomModelWithTokenLimit } from './customRequest.js'
 
 export type SearchMethod = 'chat' | 'responses' | 'client'
 const TTL = 24 * 60 * 60 * 1000
@@ -26,34 +27,35 @@ const probe = async (root: string, apiKey: string, model: string): Promise<Searc
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 25000)
     try {
-      const response = await request(
-        `${root}/${method === 'chat' ? 'chat/completions' : 'responses'}`,
-        {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-          signal: controller.signal,
-          body: JSON.stringify(
-            method === 'chat'
-              ? {
-                  model,
-                  stream: false,
-                  reasoning_effort: 'none',
-                  max_tokens: 512,
-                  messages: [{ role: 'user', content: prompt }],
-                  web_search_options: {},
-                }
-              : {
-                  model,
-                  stream: false,
-                  reasoning: { effort: 'none' },
-                  max_output_tokens: 768,
-                  input: prompt,
-                  tools: [{ type: 'web_search' }],
-                  include: ['web_search_call.action.sources'],
-                }
-          ),
-        }
-      )
+      const response =
+        method === 'chat'
+          ? await requestCustomModelWithTokenLimit(
+              `${root}/chat/completions`,
+              apiKey,
+              {
+                model,
+                stream: false,
+                reasoning_effort: 'none',
+                messages: [{ role: 'user', content: prompt }],
+                web_search_options: {},
+              },
+              512,
+              controller.signal
+            )
+          : await request(`${root}/responses`, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+              signal: controller.signal,
+              body: JSON.stringify({
+                model,
+                stream: false,
+                reasoning: { effort: 'none' },
+                max_output_tokens: 768,
+                input: prompt,
+                tools: [{ type: 'web_search' }],
+                include: ['web_search_call.action.sources'],
+              }),
+            })
       const data = await response.json()
       const supported =
         method === 'chat'

@@ -24,22 +24,23 @@ export const describeReply = (reply: AssistantMessage): Notice | null => {
       localMessage && isTranslationKey(localMessage.key)
         ? translate(localMessage.key, localMessage.params)
         : reply.error.message
+    const customRequest = localMessage?.key === 'customRequestFailed' ? message : undefined
     // 历史补传错误刷新后仍需说明原因，恢复沿用附件卡片或重新生成。
     if (kind === 'upload') {
       return { text: message || translate('uploadFileStatusFailed') }
     }
     if (kind === 'network') {
-      return { text: translate('commonNetworkErrorToast') }
+      return { text: customRequest ?? translate('commonNetworkErrorToast') }
     }
     switch (classifyStatus(status)) {
       case 'unauthorized':
-        return { text: translate('replyInvalidApiKey'), action: 'apiKey' }
+        return { text: customRequest ?? translate('replyInvalidApiKey'), action: 'apiKey' }
       case 'insufficientBalance':
-        return { text: translate('replyInsufficientBalance'), action: 'topUp' }
+        return { text: customRequest ?? translate('replyInsufficientBalance'), action: 'topUp' }
       case 'rateLimited':
-        return { text: translate('replyRateLimited') }
+        return { text: customRequest ?? translate('replyRateLimited') }
       case 'serverBusy':
-        return { text: translate('completionServerBusyToast') }
+        return { text: customRequest ?? translate('completionServerBusyToast') }
       default:
         return message ? { text: message } : null
     }

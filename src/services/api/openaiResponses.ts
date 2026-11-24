@@ -1,15 +1,16 @@
 import { ApiError } from './client.js'
 import { readServerSentEvents } from './sse.js'
-import { createLiteralToolFilter } from './openaiSearch.js'
+import { createLiteralToolFilter, SearchNotExecuted } from './openaiSearch.js'
 import type { OpenaiRequest } from './openai.js'
 import type { MessageStreamEvent, WebSearchResult } from './types.js'
 
-export const buildResponsesRequest = (body: OpenaiRequest) => ({
+export const buildResponsesRequest = (body: OpenaiRequest, search = true) => ({
   model: body.model,
   stream: true,
   reasoning: { effort: body.reasoning_effort ?? 'none', summary: 'auto' },
-  tools: [{ type: 'web_search' }],
-  include: ['web_search_call.action.sources'],
+  ...(search
+    ? { tools: [{ type: 'web_search' }], include: ['web_search_call.action.sources'] }
+    : {}),
   input: body.messages
     .filter((message) => message.role !== 'tool')
     .map((message) => ({
@@ -39,7 +40,8 @@ const obj = (value: unknown): Record<string, unknown> =>
 export async function* responsesStreamEvents(
   stream: ReadableStream<Uint8Array>,
   model: string,
-  signal: AbortSignal
+  signal: AbortSignal,
+  onSearchCompleted?: () => void
 ): AsyncGenerator<MessageStreamEvent> {
   let index = -1
   let active: 'text' | 'thinking' | null = null
@@ -48,6 +50,8 @@ export async function* responsesStreamEvents(
   const seenSearch = new Set<string>()
   const seenResults = new Set<string>()
   const seenCitations = new Set<string>()
+  let requestedSearch = false
+  let completedSearch = false
   const filter = createLiteralToolFilter()
   for await (const frame of readServerSentEvents(stream, signal)) {
     signal.throwIfAborted()
@@ -62,6 +66,10 @@ export async function* responsesStreamEvents(
     }
     const type = event.type ?? frame.event
     const response = obj(event.response)
+    if (typeof type === 'string' && type.startsWith('response.web_search_call.')) {
+      requestedSearch = true
+      completedSearch ||= type === 'response.web_search_call.completed'
+    }
     if (event.error || type === 'error' || type === 'response.failed') {
       throw new ApiError(
         'stream',
@@ -115,6 +123,10 @@ export async function* responsesStreamEvents(
       type === 'response.completed' && Array.isArray(response.output) ? response.output : [item]
     for (const raw of items) {
       const output = obj(raw)
+      if (output.type === 'web_search_call') {
+        requestedSearch = true
+        completedSearch ||= output.status === 'completed'
+      }
       if (
         output.type === 'web_search_call' &&
         (output.status === 'in_progress' || output.status === 'completed') &&
@@ -227,6 +239,12 @@ export async function* responsesStreamEvents(
       }
     }
     if (type === 'response.completed' || type === 'response.incomplete') {
+      if (requestedSearch && !completedSearch && !seenCitations.size) {
+        throw new SearchNotExecuted()
+      }
+      if (completedSearch || seenCitations.size) {
+        onSearchCompleted?.()
+      }
       if (active) {
         yield { type: 'content_block_stop', index }
       }

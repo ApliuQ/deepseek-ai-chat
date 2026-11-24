@@ -1,17 +1,16 @@
-import { ApiError, request } from './client.js'
+import { translate } from '../../i18n/index.js'
+import { ApiError } from './client.js'
+import { requestCustomModel } from './customRequest.js'
 import { readServerSentEvents } from './sse.js'
 import type { MessageStreamEvent, MessageUsage, StopReason } from './types.js'
 import { fetchBrowserUrl, searchBrowserWeb } from './browserWeb.js'
-import {
-  createLiteralToolFilter,
-  searchQuery,
-  searchFailureNote,
-  type OpenaiToolCall,
-} from './openaiSearch.js'
+import { createLiteralToolFilter, searchQuery, type OpenaiToolCall } from './openaiSearch.js'
 import { FILE_TOOL_ROUNDS, type FileReaderTool } from './openaiFiles.js'
 import type { WebSearchResult } from './types.js'
 
 import type { OpenaiRequest } from './openai.js'
+
+const SEARCH_TOOL_ROUNDS = 3
 
 const record = (value: unknown): Record<string, unknown> | null =>
   typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null
@@ -213,9 +212,8 @@ export async function* clientSearchStreamEvents(
 }
 
 const completion = (root: string, apiKey: string, body: unknown, signal: AbortSignal) =>
-  request(`${root}/chat/completions`, {
+  requestCustomModel(`${root}/chat/completions`, apiKey, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     signal,
   })
@@ -228,7 +226,8 @@ export async function* streamClientMessage(
   onSearchUnavailable?: () => void,
   beforeSearch?: () => Promise<void>,
   readFile?: FileReaderTool,
-  failureNotes = new Set<string>()
+  failureNotes = new Set<string>(),
+  onSearchCompleted?: () => void
 ): AsyncGenerator<MessageStreamEvent> {
   const messages = [...body.messages]
   const search = body.tools?.some((tool) => tool.function.name === 'web_search') ?? false
@@ -248,10 +247,13 @@ export async function* streamClientMessage(
   const sources = new Map<string, WebSearchResult>()
   let searchCalls = 0
   let searchUnavailable = false
-  let lastSearchError: unknown
+  let lastSearchFailure = ''
+  let invalidSearch = false
+  let completedSearch = false
+  const roundLimit = () => translate('customSearchRoundLimit', { count: SEARCH_TOOL_ROUNDS })
   for (let round = 0; ; round++) {
     signal.throwIfAborted()
-    const canSearch = search && searchCalls < 3 && !searchUnavailable
+    const canSearch = search && searchCalls < SEARCH_TOOL_ROUNDS && !searchUnavailable
     const tools = body.tools?.filter((tool) =>
       tool.function.name === 'read_file' ? !!readFile && round < FILE_TOOL_ROUNDS : canSearch
     )
@@ -341,22 +343,21 @@ export async function* streamClientMessage(
       }
     }
     if (!turn.calls.length || round >= FILE_TOOL_ROUNDS || (!readFile && !canSearch)) {
-      if (round >= FILE_TOOL_ROUNDS && turn.calls.length) {
-        const failure = turn.calls.some((call) => call.function.name !== 'read_file')
-          ? searchFailureNote(new Error('工具调用轮数超过上限（8 轮）'))
-          : undefined
-        yield* note(
-          failure ? `\n\n${failure}` : '\n\n文件工具调用轮数超过上限（8 轮），请缩小问题范围。',
-          failure
-        )
+      const requestedSearch = turn.calls.some((call) => call.function.name === 'web_search')
+      if (search && !completedSearch && !lastSearchFailure && (invalidSearch || requestedSearch)) {
+        const failure = translate('customSearchUnsupported')
+        yield* note(`\n\n> ${failure}\n\n`, failure)
+      } else if (round >= FILE_TOOL_ROUNDS && turn.calls.length) {
+        const failure = requestedSearch
+          ? lastSearchFailure || roundLimit()
+          : '文件工具调用轮数超过上限（8 轮），请缩小问题范围。'
+        yield* note(`\n\n${failure}\n\n`, failure)
+      } else if (search && requestedSearch && searchCalls >= SEARCH_TOOL_ROUNDS) {
+        const failure = lastSearchFailure || roundLimit()
+        yield* note(`\n\n${failure}\n\n`, failure)
       } else if (!turn.content.trim() || (search && turn.finish === 'tool_use')) {
-        const failure = search
-          ? searchFailureNote(
-              lastSearchError ??
-                new Error(canSearch ? '模型未返回可显示的回答' : '搜索工具调用轮数超过上限（3 轮）')
-            )
-          : undefined
-        yield* note(failure ? `\n\n${failure}` : '\n\n模型未返回可显示的回答。', failure)
+        const failure = lastSearchFailure || translate('customModelEmptyAnswer')
+        yield* note(`\n\n${failure}\n\n`, failure)
       }
       yield {
         type: 'message_delta',
@@ -413,6 +414,7 @@ export async function* streamClientMessage(
         query = searchQuery(call)
       } catch (error) {
         signal.throwIfAborted()
+        invalidSearch ||= call.function.name === 'web_search'
         messages.push({
           role: 'tool',
           tool_call_id: call.id,
@@ -426,36 +428,43 @@ export async function* streamClientMessage(
       // 只有模型请求有效工具时才探测；允许路由层改用服务端搜索。
       await beforeSearch?.()
       let results: WebSearchResult[] = []
-      let failure = ''
+      let failure =
+        !canSearch || searchUnavailable || searchCalls >= SEARCH_TOOL_ROUNDS
+          ? lastSearchFailure || roundLimit()
+          : ''
       try {
-        if (!canSearch || searchUnavailable || searchCalls >= 3) {
-          throw lastSearchError ?? new Error('搜索工具调用轮数超过上限（3 轮）')
-        }
-        yield {
-          type: 'content_block_start',
-          index,
-          content_block: {
-            type: 'server_tool_use',
-            id: call.id,
-            name: 'deepseek_web_search',
-            kind: 'search',
-            caller: { type: 'direct' },
-            input: { action: 'search', query, queries: [query] },
-          },
-        }
-        yield { type: 'content_block_stop', index: index++ }
-        searchCalls++
-        results = await (call.function.name === 'fetch_url' ? fetchBrowserUrl : searchBrowserWeb)(
-          query,
-          signal
-        )
-        for (const result of results) {
-          sources.set(result.url, result)
+        if (!failure) {
+          yield {
+            type: 'content_block_start',
+            index,
+            content_block: {
+              type: 'server_tool_use',
+              id: call.id,
+              name: 'deepseek_web_search',
+              kind: 'search',
+              caller: { type: 'direct' },
+              input: { action: 'search', query, queries: [query] },
+            },
+          }
+          yield { type: 'content_block_stop', index: index++ }
+          searchCalls++
+          results = await (call.function.name === 'fetch_url' ? fetchBrowserUrl : searchBrowserWeb)(
+            query,
+            signal
+          )
+          for (const result of results) {
+            sources.set(result.url, result)
+          }
+          if (call.function.name === 'web_search') {
+            completedSearch = true
+            onSearchCompleted?.()
+          }
         }
       } catch (error) {
         signal.throwIfAborted()
-        lastSearchError = error
-        failure = searchFailureNote(error)
+        failure =
+          error instanceof ApiError ? error.message : translate('customRequestResponseReason')
+        lastSearchFailure = failure
         searchUnavailable = true
         onSearchUnavailable?.()
       }

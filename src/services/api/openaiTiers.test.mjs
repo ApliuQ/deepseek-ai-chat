@@ -57,6 +57,10 @@ test('capabilities require evidence, probe in order and cache each root/model wi
         calls.push(url)
         const body = JSON.parse(init.body)
         assert.equal(body.stream, false)
+        if (url.endsWith('/chat/completions')) {
+          assert.equal(body.max_completion_tokens, 512)
+          assert.equal(body.max_tokens, undefined)
+        }
         return Response.json(
           url.endsWith('/responses')
             ? {
@@ -94,6 +98,39 @@ test('capabilities require evidence, probe in order and cache each root/model wi
     api.invalidateSearchMethod('https://gateway.test/v1', 'one')
     assert.equal(store.getItem(key), null)
   }
+})
+
+test('Chat Completions probe preserves search options when retrying without rejected token limits', async () => {
+  const calls = []
+  const api = await loadApi({
+    storage: storage(),
+    fetch: async (url, init) => {
+      assert.equal(url, 'https://gateway.test/v1/chat/completions')
+      calls.push(JSON.parse(init.body))
+      return calls.length === 1
+        ? Response.json(
+            {
+              error: {
+                message: "Unsupported parameter: 'max_tokens' is not supported with this model.",
+              },
+            },
+            { status: 400 }
+          )
+        : Response.json({
+            choices: [
+              { message: { annotations: [{ type: 'url_citation', url: 'https://example.com' }] } },
+            ],
+          })
+    },
+  })
+  assert.equal(
+    await api.detectSearchMethod('https://gateway.test/v1', 'key', 'm', signal()),
+    'chat'
+  )
+  const { max_completion_tokens: limit, ...rest } = calls[0]
+  assert.equal(limit, 512)
+  assert.deepEqual(rest.web_search_options, {})
+  assert.deepEqual(calls, [{ ...rest, max_completion_tokens: 512 }, rest])
 })
 
 test('concurrent probes dedupe; errors, 404 and incomplete search are unsupported; corrupt or denied storage is safe', async () => {
@@ -243,11 +280,13 @@ test('Responses empty/error/interrupted streams are readable or fail; final-item
 test('cached Chat runtime failure invalidates cache and falls through to streamed Responses', async () => {
   const store = storage()
   const calls = []
+  const chatSearchOptions = []
   const api = await loadApi({
     storage: store,
     fetch: async (url, init) => {
       calls.push(url)
       if (url.endsWith('/chat/completions')) {
+        chatSearchOptions.push(JSON.parse(init.body).web_search_options)
         return new Response('unsupported', { status: 400 })
       }
       assert.equal(JSON.parse(init.body).stream, true)
@@ -272,7 +311,8 @@ test('cached Chat runtime failure invalidates cache and falls through to streame
   const events = await collect(
     api.streamOpenaiMessage('https://gateway.test/v1', 'key', body, signal())
   )
-  assert.equal(calls.length, 2)
+  assert.equal(calls.length, 3)
+  assert.deepEqual(chatSearchOptions, [{}, undefined])
   assert.equal(store.getItem(key), null)
   assert.equal(events.filter((e) => e.type === 'message_start').length, 1)
   assert.equal(events.filter((e) => e.type === 'message_stop').length, 1)
@@ -340,7 +380,8 @@ test('Responses failure falls through to client; Exa/Jina 429 always shows the r
       api.streamOpenaiMessage('https://gateway.test/v1', 'key', body, signal())
     )
     const text = events.map((e) => e.delta?.text ?? e.content_block?.text ?? '').join('')
-    assert.match(text, /当前模型不支持联网搜索/)
+    assert.match(text, /联网搜索（Exa）失败|读取网页失败/)
+    assert.doesNotMatch(text, /当前模型不支持联网搜索/)
     assert.match(text, /429/)
     assert.match(text, /Here is what I know/)
     assert.equal(chats, 2)
@@ -420,7 +461,7 @@ test('hosted answers without search do not fall through; failed client requests 
       assert.equal(store.getItem(key), null)
       assert.match(
         events.map((e) => e.content_block?.text ?? '').join(''),
-        /当前模型不支持联网搜索/
+        /请求模型接口失败：服务返回 HTTP 503/
       )
     } else {
       assert.ok(store.getItem(key))

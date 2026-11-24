@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { stripTypeScriptTypes } from 'node:module'
 import vm from 'node:vm'
 import { DOMParser } from '@xmldom/xmldom'
+import { zh } from '../../i18n/zh.ts'
 
 export const loadApi = async ({
   fetch = globalThis.fetch,
@@ -9,6 +10,7 @@ export const loadApi = async ({
   clientSource,
   storage,
   document,
+  locale = zh,
 } = {}) => {
   const context = vm.createContext({
     URL,
@@ -48,7 +50,15 @@ export const loadApi = async ({
   }
   const resolve = async (specifier, parent) => {
     if (specifier.includes('/i18n/')) {
-      return stub({ translate: (key) => key })
+      return stub({
+        translate: (key, params) =>
+          key.startsWith('custom') && locale[key]
+            ? locale[key].replace(
+                /\{(\w+)\}/g,
+                (placeholder, name) => params?.[name] ?? placeholder
+              )
+            : key,
+      })
     }
     if (specifier.includes('resizeUploadImage')) {
       return stub({ resizeUploadImage: (file) => file, isUploadImageOversized: async () => false })
@@ -109,6 +119,7 @@ export const loadApi = async ({
     ...upload.namespace,
     ...modules.get(new URL('./openaiFiles.ts', import.meta.url).href)?.namespace,
     ...modules.get(new URL('./browserWeb.ts', import.meta.url).href)?.namespace,
+    ...modules.get(new URL('./customRequest.ts', import.meta.url).href)?.namespace,
     ...modules.get(new URL('./openaiSearch.ts', import.meta.url).href)?.namespace,
     ...modules.get(new URL('./openaiClientSearch.ts', import.meta.url).href)?.namespace,
     ...modules.get(new URL('./openaiResponses.ts', import.meta.url).href)?.namespace,

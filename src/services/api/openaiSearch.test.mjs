@@ -115,8 +115,9 @@ test('long queries reach Exa unchanged and only real service failures show an un
         assert.doesNotMatch(text(events), /当前模型不支持联网搜索/)
         assert.equal(tool.results[0].title, 'Source')
       } else {
-        assert.match(text(events), /当前模型不支持联网搜索：HTTP 400: Exa rejected this query/)
-        assert.match(tool.error, /HTTP 400: Exa rejected this query/)
+        assert.match(text(events), /联网搜索（Exa）失败：服务返回 HTTP 400/)
+        assert.match(tool.error, /HTTP 400/)
+        assert.doesNotMatch(text(events), /当前模型不支持联网搜索|Exa rejected this query/)
       }
       assert.match(text(events), /Final answer/)
     }
@@ -326,7 +327,8 @@ test('denied, malformed and empty searches still allow a final answer; aborts do
     )
     assert.match(text(events), /here is what I know/)
     if (JSON.parse(calls[2].body.messages.at(-1).content).error) {
-      assert.match(text(events), /当前模型不支持联网搜索：/)
+      assert.match(text(events), /联网搜索（Exa）失败/)
+      assert.doesNotMatch(text(events), /当前模型不支持联网搜索/)
       assert.equal(calls[2].body.tools, undefined)
       assert.equal(calls[2].body.tool_choice, 'none')
       assert.equal(
@@ -336,7 +338,7 @@ test('denied, malformed and empty searches still allow a final answer; aborts do
       )
     }
     if (text(events).includes('429')) {
-      assert.match(text(events), /rate limited/)
+      assert.match(text(events), /服务返回 HTTP 429/)
     }
   }
   const controller = new AbortController()

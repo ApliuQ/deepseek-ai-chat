@@ -99,7 +99,7 @@ test('web provider rejects invalid, oversized and MCP error responses and report
         init.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
       }),
   })
-  await assert.rejects(api.searchBrowserWeb('news', signal()), /timed out/)
+  await assert.rejects(api.searchBrowserWeb('news', signal()), /请求超时/)
 })
 
 test('literal-only replies never finish blank, including Search off', async () => {
