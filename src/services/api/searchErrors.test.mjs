@@ -27,6 +27,122 @@ const replyText = (events) =>
 const searchRequest = (api) =>
   api.buildOpenaiRequest([], 'model', false, true, async () => undefined, signal())
 
+test('an initial search HTTP 400 retries the same endpoint once without search configuration', async () => {
+  for (const method of ['client', 'chat', 'responses']) {
+    const root = 'https://gateway.test/v1'
+    const endpoint = root + (method === 'responses' ? '/responses' : '/chat/completions')
+    const calls = []
+    const api = await loadApi({
+      locale: method === 'responses' ? en : undefined,
+      storage: {
+        getItem: () => JSON.stringify({ method, expires: Date.now() + 60000 }),
+        removeItem: () => {},
+      },
+      fetch: async (url, init) => {
+        assert.equal(url, endpoint)
+        calls.push(JSON.parse(init.body))
+        if (calls.length === 1) {
+          return Response.json({ error: { message: 'bad request' } }, { status: 400 })
+        }
+        return method === 'responses'
+          ? new Response(
+              sseBody(
+                'data: {"type":"response.output_text.delta","delta":"Offline answer."}\n\n' +
+                  'data: {"type":"response.completed","response":{"output":[]}}\n\n'
+              ),
+              { headers: { 'Content-Type': 'text/event-stream' } }
+            )
+          : chat({ content: 'Offline answer.' })
+      },
+    })
+    const events = await collect(
+      api.streamOpenaiMessage(root, 'key', await searchRequest(api), signal())
+    )
+    const { tools, tool_choice, web_search_options, include, ...plain } = calls[0]
+    if (method === 'responses') {
+      assert.deepEqual(tools, [{ type: 'web_search' }])
+      assert.deepEqual(include, ['web_search_call.action.sources'])
+    } else if (method === 'chat') {
+      assert.deepEqual(web_search_options, {})
+    } else {
+      assert.equal(tool_choice, 'auto')
+      assert.deepEqual(
+        tools.map((tool) => tool.function.name),
+        ['web_search', 'fetch_url']
+      )
+    }
+    assert.equal(calls.length, 2)
+    assert.deepEqual(calls[1], plain)
+    const text = replyText(events)
+    assert.match(text, /Offline answer\./)
+    assert.ok(
+      text.includes(
+        method === 'responses'
+          ? en.customSearchFallback
+          : '当前模型不支持联网搜索，已改为不联网回答'
+      )
+    )
+    assert.doesNotMatch(text, /HTTP 400|bad request/)
+    assert.equal(events.filter((e) => e.type === 'message_start').length, 1)
+    assert.equal(events.at(-1).type, 'message_stop')
+  }
+})
+
+test('a failed offline retry or a non-400 search failure retains the request error', async () => {
+  for (const statuses of [[400, 400], [400, 403], [401], [403], [429], [500], [502]]) {
+    const calls = []
+    const api = await loadApi({
+      fetch: async (_url, init) => {
+        const status = statuses[calls.length]
+        calls.push(JSON.parse(init.body))
+        return Response.json({ error: { message: 'private gateway detail' } }, { status })
+      },
+    })
+    const events = await collect(
+      api.streamOpenaiMessage('https://gateway.test/v1', 'key', await searchRequest(api), signal())
+    )
+    assert.equal(calls.length, statuses.length)
+    assert.ok(calls[0].tools?.length)
+    if (calls.length > 1) {
+      assert.equal(calls[1].tools, undefined)
+    }
+    const text = replyText(events)
+    assert.ok(text.includes('请求模型接口失败：服务返回 HTTP ' + statuses.at(-1)))
+    assert.doesNotMatch(text, /当前模型不支持联网搜索|private gateway detail/)
+  }
+})
+
+test('HTTP 400 after a model tool call does not restart the reply without search', async () => {
+  const calls = []
+  const api = await loadApi({
+    storage: {
+      getItem: () => JSON.stringify({ method: 'client', expires: Date.now() + 60000 }),
+      removeItem: () => {},
+    },
+    fetch: async (url, init) => {
+      if (url === 'https://mcp.exa.ai/mcp') {
+        return Response.json({
+          id: 1,
+          result: { content: [{ type: 'text', text: 'Title: News\nURL: https://example.com' }] },
+        })
+      }
+      calls.push(JSON.parse(init.body))
+      return calls.length === 1
+        ? chat(searchCall(), 'tool_calls')
+        : Response.json({ error: { message: 'bad request' } }, { status: 400 })
+    },
+  })
+  const text = replyText(
+    await collect(
+      api.streamOpenaiMessage('https://gateway.test/v1', 'key', await searchRequest(api), signal())
+    )
+  )
+  assert.equal(calls.length, 2)
+  assert.ok(calls[1].messages.some((message) => message.role === 'tool'))
+  assert.match(text, /请求模型接口失败：服务返回 HTTP 400/)
+  assert.doesNotMatch(text, /当前模型不支持联网搜索/)
+})
+
 test('a browser fetch failure names the operation and URL without blaming the model', async () => {
   for (const target of ['gateway', 'exa']) {
     const api = await loadApi({

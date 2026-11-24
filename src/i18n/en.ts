@@ -89,6 +89,8 @@ export const en = {
   customRequestTimeoutReason: 'the request timed out. Please try again',
   customRequestResponseReason: 'the service did not return a usable response. Please try again',
   customSearchUnsupported: 'This model does not support web search',
+  customSearchFallback:
+    'This model does not support web search. Answered without searching the web.',
   customModelEmptyAnswer: 'The model did not return an answer to display. Please try again.',
   customSearchRoundLimit:
     'The search tool call limit ({count} rounds) was reached. Try narrowing your question.',

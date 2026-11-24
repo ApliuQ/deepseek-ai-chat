@@ -82,6 +82,7 @@ export const zh = {
   customRequestTimeoutReason: '请求超时，请稍后重试',
   customRequestResponseReason: '服务未返回可用的响应，请重试',
   customSearchUnsupported: '当前模型不支持联网搜索',
+  customSearchFallback: '当前模型不支持联网搜索，已改为不联网回答',
   customModelEmptyAnswer: '模型未返回可显示的回答，请重试。',
   customSearchRoundLimit: '搜索工具调用轮数超过上限（{count} 轮），请缩小问题范围后重试。',
   replyInvalidApiKey: 'API Key 无效或已被删除，请更换后重试',

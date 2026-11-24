@@ -280,11 +280,13 @@ test('Responses empty/error/interrupted streams are readable or fail; final-item
 test('cached Chat runtime failure invalidates cache and falls through to streamed Responses', async () => {
   const store = storage()
   const calls = []
+  const chatSearchOptions = []
   const api = await loadApi({
     storage: store,
     fetch: async (url, init) => {
       calls.push(url)
       if (url.endsWith('/chat/completions')) {
+        chatSearchOptions.push(JSON.parse(init.body).web_search_options)
         return new Response('unsupported', { status: 400 })
       }
       assert.equal(JSON.parse(init.body).stream, true)
@@ -309,7 +311,8 @@ test('cached Chat runtime failure invalidates cache and falls through to streame
   const events = await collect(
     api.streamOpenaiMessage('https://gateway.test/v1', 'key', body, signal())
   )
-  assert.equal(calls.length, 2)
+  assert.equal(calls.length, 3)
+  assert.deepEqual(chatSearchOptions, [{}, undefined])
   assert.equal(store.getItem(key), null)
   assert.equal(events.filter((e) => e.type === 'message_start').length, 1)
   assert.equal(events.filter((e) => e.type === 'message_stop').length, 1)

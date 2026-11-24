@@ -4,12 +4,13 @@ import { createLiteralToolFilter, SearchNotExecuted } from './openaiSearch.js'
 import type { OpenaiRequest } from './openai.js'
 import type { MessageStreamEvent, WebSearchResult } from './types.js'
 
-export const buildResponsesRequest = (body: OpenaiRequest) => ({
+export const buildResponsesRequest = (body: OpenaiRequest, search = true) => ({
   model: body.model,
   stream: true,
   reasoning: { effort: body.reasoning_effort ?? 'none', summary: 'auto' },
-  tools: [{ type: 'web_search' }],
-  include: ['web_search_call.action.sources'],
+  ...(search
+    ? { tools: [{ type: 'web_search' }], include: ['web_search_call.action.sources'] }
+    : {}),
   input: body.messages
     .filter((message) => message.role !== 'tool')
     .map((message) => ({

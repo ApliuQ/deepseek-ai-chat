@@ -384,11 +384,17 @@ export async function* streamOpenaiMessage(
   let nextIndex = 0
   let started = false
   let hostedSearchUnfulfilled = false
-  while (remaining.length) {
-    const tier = remaining.shift()
+  let firstAttempt = true
+  let retryWithoutSearch: SearchMethod | undefined
+  while (retryWithoutSearch || remaining.length) {
+    const withoutSearch = retryWithoutSearch !== undefined
+    const tier = retryWithoutSearch ?? remaining.shift()
     if (!tier) {
       break
     }
+    retryWithoutSearch = undefined
+    const mayRetryWithoutSearch = firstAttempt
+    firstAttempt = false
     const offset = nextIndex
     const activeBlocks = new Set<number>()
     try {
@@ -397,23 +403,36 @@ export async function* streamOpenaiMessage(
         searchCompleted = true
       }
       const source =
-        tier === 'chat'
-          ? streamChatMessage(root, apiKey, body, signal, true)
-          : tier === 'responses'
-            ? (async function* () {
-                const response = await requestCustomModel(`${root}/responses`, apiKey, {
-                  method: 'POST',
-                  body: JSON.stringify(buildResponsesRequest(body)),
-                  signal,
-                })
-                if (
-                  !response.body ||
-                  !response.headers.get('Content-Type')?.includes('text/event-stream')
-                ) {
-                  throw new ApiError('protocol', 'Expected a Responses event stream')
-                }
-                yield* responsesStreamEvents(response.body, body.model, signal, onSearchCompleted)
-              })()
+        tier === 'responses'
+          ? (async function* () {
+              const response = await requestCustomModel(`${root}/responses`, apiKey, {
+                method: 'POST',
+                body: JSON.stringify(buildResponsesRequest(body, !withoutSearch)),
+                signal,
+              })
+              if (
+                !response.body ||
+                !response.headers.get('Content-Type')?.includes('text/event-stream')
+              ) {
+                throw new ApiError('protocol', 'Expected a Responses event stream')
+              }
+              yield* responsesStreamEvents(response.body, body.model, signal, onSearchCompleted)
+            })()
+          : tier === 'chat' || withoutSearch
+            ? streamChatMessage(
+                root,
+                apiKey,
+                withoutSearch
+                  ? {
+                      ...body,
+                      tools: undefined,
+                      tool_choice: undefined,
+                      web_search_options: undefined,
+                    }
+                  : body,
+                signal,
+                !withoutSearch
+              )
             : streamClientMessage(
                 root,
                 apiKey,
@@ -463,13 +482,18 @@ export async function* streamOpenaiMessage(
           }
         }
       }
-      if (hostedSearchUnfulfilled && !searchCompleted && !failureNotes.size) {
+      const notice = withoutSearch
+        ? translate('customSearchFallback')
+        : hostedSearchUnfulfilled && !searchCompleted && !failureNotes.size
+          ? translate('customSearchUnsupported')
+          : undefined
+      if (notice) {
         yield {
           type: 'content_block_start',
           index: nextIndex,
           content_block: {
             type: 'text',
-            text: `\n\n> ${translate('customSearchUnsupported')}\n\n`,
+            text: `\n\n> ${notice}\n\n`,
           },
         }
         yield { type: 'content_block_stop', index: nextIndex }
@@ -486,10 +510,21 @@ export async function* streamOpenaiMessage(
         continue
       }
       invalidateSearchMethod(root, body.model)
-      if (error instanceof SearchNotExecuted) {
+      if (
+        mayRetryWithoutSearch &&
+        !started &&
+        error instanceof ApiError &&
+        error.kind === 'http' &&
+        error.status === 400
+      ) {
+        retryWithoutSearch = tier
+        continue
+      }
+      if (!withoutSearch && error instanceof SearchNotExecuted) {
         hostedSearchUnfulfilled = true
         continue
       }
+      const stop = tier === 'client' || (withoutSearch && started)
       if (!started) {
         yield { type: 'message_start', message: { id: '', model: body.model } }
         started = true
@@ -505,7 +540,7 @@ export async function* streamOpenaiMessage(
         }
         yield { type: 'content_block_stop', index: nextIndex++ }
       }
-      if (tier === 'client') {
+      if (stop) {
         yield { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null } }
         yield { type: 'message_stop' }
         return
