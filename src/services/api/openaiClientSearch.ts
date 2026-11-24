@@ -1,6 +1,7 @@
 import { translate } from '../../i18n/index.js'
 import { ApiError } from './client.js'
-import { requestCustomModel } from './customRequest.js'
+import { requestCustomModel, requireCustomEventStream } from './customRequest.js'
+import { captureResponseDetails, type ResponseDetails } from './responseDetails.js'
 import { readServerSentEvents } from './sse.js'
 import type { MessageStreamEvent, MessageUsage, StopReason } from './types.js'
 import { fetchBrowserUrl, searchBrowserWeb } from './browserWeb.js'
@@ -59,7 +60,8 @@ export async function* clientSearchStreamEvents(
   stream: ReadableStream<Uint8Array>,
   model: string,
   signal: AbortSignal,
-  turn?: OpenaiTurn
+  turn?: OpenaiTurn,
+  apiKey?: string
 ): AsyncGenerator<MessageStreamEvent> {
   let started = false
   let index = -1
@@ -93,13 +95,23 @@ export async function* clientSearchStreamEvents(
       chunk = record(JSON.parse(frame.data))
     } catch {
       if (frame.event === 'error') {
-        throw new ApiError('stream', frame.data)
+        throw new ApiError(
+          'stream',
+          frame.data,
+          undefined,
+          captureResponseDetails(frame.data, undefined, apiKey)
+        )
       }
       throw new ApiError('protocol', 'Invalid chat completion event')
     }
     const error = record(chunk?.error)
-    if (error || frame.event === 'error') {
-      throw new ApiError('stream', typeof error?.message === 'string' ? error.message : frame.data)
+    if (chunk?.error || frame.event === 'error') {
+      throw new ApiError(
+        'stream',
+        typeof error?.message === 'string' ? error.message : frame.data,
+        undefined,
+        captureResponseDetails(frame.data, undefined, apiKey)
+      )
     }
     if (!chunk) {
       throw new ApiError('protocol', 'Invalid chat completion event')
@@ -232,14 +244,22 @@ export async function* streamClientMessage(
   const messages = [...body.messages]
   const search = body.tools?.some((tool) => tool.function.name === 'web_search') ?? false
   let index = 0
-  function* note(text: string, failure?: string): Generator<MessageStreamEvent> {
+  function* note(
+    text: string,
+    failure?: string,
+    responseDetails?: ResponseDetails
+  ): Generator<MessageStreamEvent> {
     if (failure) {
       if (failureNotes.has(failure)) {
         return
       }
       failureNotes.add(failure)
     }
-    yield { type: 'content_block_start', index, content_block: { type: 'text', text } }
+    yield {
+      type: 'content_block_start',
+      index,
+      content_block: { type: 'text', text, responseDetails },
+    }
     yield { type: 'content_block_stop', index: index++ }
   }
   let started = false
@@ -272,14 +292,16 @@ export async function* streamClientMessage(
       },
       signal
     )
-    if (!response.body || !response.headers.get('Content-Type')?.includes('text/event-stream')) {
-      throw new ApiError('protocol', 'Expected a chat completion event stream')
-    }
+    const stream = await requireCustomEventStream(
+      response,
+      'Expected a chat completion event stream',
+      apiKey
+    )
     const turn: OpenaiTurn = { calls: [], content: '' }
     const offset = index
     const texts = new Map<number, string>()
     const cited = new Set<string>()
-    for await (const event of clientSearchStreamEvents(response.body, body.model, signal, turn)) {
+    for await (const event of clientSearchStreamEvents(stream, body.model, signal, turn, apiKey)) {
       if (event.type === 'message_start') {
         if (!started) {
           yield event
@@ -421,6 +443,7 @@ export async function* streamClientMessage(
         continue
       }
       let query = ''
+      let responseDetails: ResponseDetails | undefined
       try {
         query = searchQuery(call)
       } catch (error) {
@@ -461,7 +484,8 @@ export async function* streamClientMessage(
           searchCalls++
           results = await (call.function.name === 'fetch_url' ? fetchBrowserUrl : searchBrowserWeb)(
             query,
-            signal
+            signal,
+            apiKey
           )
           for (const result of results) {
             sources.set(result.url, result)
@@ -475,6 +499,7 @@ export async function* streamClientMessage(
         signal.throwIfAborted()
         failure =
           error instanceof ApiError ? error.message : translate('customRequestResponseReason')
+        responseDetails = error instanceof ApiError ? error.responseDetails : undefined
         lastSearchFailure = failure
         searchUnavailable = true
         onSearchUnavailable?.()
@@ -493,7 +518,7 @@ export async function* streamClientMessage(
       }
       yield { type: 'content_block_stop', index: index++ }
       if (failure) {
-        yield* note(`\n\n> ${failure}\n\n`, failure)
+        yield* note(`\n\n> ${failure}\n\n`, failure, responseDetails)
       }
       messages.push({
         role: 'tool',

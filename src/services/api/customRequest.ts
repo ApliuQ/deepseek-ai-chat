@@ -1,7 +1,25 @@
 import { translate, type TranslationKey } from '../../i18n/index.js'
 import { ApiError, request, type ApiErrorKind } from './client.js'
+import { captureResponseDetails } from './responseDetails.js'
 
 type Operation = 'customModelRequest' | 'customExaSearch' | 'customReadWebpage'
+
+export const requireCustomEventStream = async (
+  response: Response,
+  message: string,
+  apiKey: string
+): Promise<ReadableStream<Uint8Array>> => {
+  if (response.body && response.headers.get('Content-Type')?.includes('text/event-stream')) {
+    return response.body
+  }
+  const body = await response.text().catch(() => '')
+  throw new ApiError(
+    'protocol',
+    message,
+    undefined,
+    captureResponseDetails(body, response.status, apiKey)
+  )
+}
 
 const displayUrl = (value: string, apiKey?: string): string => {
   let address: string
@@ -56,15 +74,20 @@ export const customRequestError = (
         reason: translate(reason, status === undefined ? undefined : { status }),
       },
     },
-    status
+    status,
+    error instanceof ApiError ? error.responseDetails : undefined
   )
 }
 
 const sendCustomModelRequest = (url: string, apiKey: string, init: RequestInit) =>
-  request(url, {
-    ...init,
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-  })
+  request(
+    url,
+    {
+      ...init,
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    },
+    (body, status) => captureResponseDetails(body, status, apiKey)
+  )
 
 export const requestCustomModel = async (
   url: string,

@@ -4,6 +4,8 @@
  * 声明 deepseek_web_search / deepseek_read_url 或设置 safety_check.level 为 high 时进入扩展模式。
  */
 
+import type { ResponseDetails } from './responseDetails.js'
+
 export type ChatModel = string
 
 // ---------- 响应：内容块 ----------
@@ -21,7 +23,12 @@ export type TextCitation = {
 }
 
 /** 文本块：挂过引用的块之后，后续正文另起新块；同一块内引用按 url 去重 */
-export type TextBlock = { type: 'text'; text: string; citations?: TextCitation[] }
+export type TextBlock = {
+  type: 'text'
+  text: string
+  citations?: TextCitation[]
+  responseDetails?: ResponseDetails
+}
 
 /** 思考块：签名在块结束前经 signature_delta 下发，值为本次响应的消息 id */
 export type ThinkingBlock = { type: 'thinking'; thinking: string; signature: string }

@@ -1,5 +1,6 @@
 import { translate } from '../../i18n/index.js'
 import { isWebUrl } from '../../utils/url.js'
+import type { ResponseDetails } from '../api/responseDetails.js'
 import type {
   ServerToolKind,
   TextCitation,
@@ -7,7 +8,7 @@ import type {
   WebSearchResult,
   WebSearchToolResultBlock,
 } from '../api/types.js'
-import type { AssistantMessage, ThinkingPart } from './types.js'
+import type { AssistantMessage, TextPart, ThinkingPart } from './types.js'
 
 /**
  * 由回复的内容块推导界面需要的结构：思考与工具步骤的时间线、带引用角标的正文、可引用的来源列表。
@@ -64,15 +65,20 @@ export type ReadLinkStep = { type: 'read_link'; links: PageItem[] }
 
 export type ThinkingStep = { type: 'thinking'; key: string; blocks: ThinkingPart[] }
 
+type TextPresentation = {
+  markdown: string
+  parts?: { markdown: string; responseDetails?: ResponseDetails }[]
+}
+
 /** 工具调用前输出的说明文字 */
-export type PreambleStep = { type: 'text'; key: string; markdown: string }
+export type PreambleStep = TextPresentation & { type: 'text'; key: string }
 
 export type Step = SearchStep | OpenStep | FindStep | ReadLinkStep | ThinkingStep | PreambleStep
 
 export type ReplyView = {
   steps: Step[]
   /** 最后一个思考或工具块之后的正文；markdown 里在引用处插入了 [citation:N] */
-  answer: { markdown: string; text: string } | null
+  answer: (TextPresentation & { text: string }) | null
   /** 正文引用可指向的全部来源，按编号排列 */
   sources: Source[]
   /** 搜索到的网页（去重），用于底部汇总与搜索结果列表 */
@@ -156,11 +162,13 @@ class SourceRegistry {
  * 引用之后的空白（含换行）仍留在被引用的块里，所以 [citation:N] 插在块尾空白之前。
  */
 const joinTextBlocks = (
-  blocks: { text: string; citations?: TextCitation[] }[],
+  blocks: { text: string; citations?: TextCitation[]; responseDetails?: ResponseDetails }[],
   registry: SourceRegistry
 ) => {
   let markdown = ''
   let text = ''
+  const parts: NonNullable<TextPresentation['parts']> = []
+  let pending = ''
   for (const block of blocks) {
     text += block.text
     const indexes = new Set<number>()
@@ -171,13 +179,29 @@ const joinTextBlocks = (
       }
     }
     const body = indexes.size > 0 ? block.text.trimEnd() : block.text
-    markdown += body
+    let rendered = body
     for (const index of indexes) {
-      markdown += `[citation:${index}]`
+      rendered += `[citation:${index}]`
     }
-    markdown += block.text.slice(body.length)
+    rendered += block.text.slice(body.length)
+    markdown += rendered
+    if (block.responseDetails) {
+      if (pending.trim()) {
+        parts.push({ markdown: pending })
+      }
+      parts.push({ markdown: rendered, responseDetails: block.responseDetails })
+      pending = ''
+    } else {
+      pending += rendered
+    }
   }
-  return { markdown, text }
+  if (parts.length === 0) {
+    return { markdown, text }
+  }
+  if (pending.trim()) {
+    parts.push({ markdown: pending })
+  }
+  return { markdown, text, parts }
 }
 
 export const buildReplyView = (reply: AssistantMessage, streaming: boolean): ReplyView => {
@@ -193,7 +217,7 @@ export const buildReplyView = (reply: AssistantMessage, streaming: boolean): Rep
   const steps: Step[] = []
   const mergedSearch = new Map<ServerToolKind, SearchStep>()
   let mergedThinking: ThinkingStep | null = null
-  let pendingText: { index: number; text: string; citations?: TextCitation[] }[] = []
+  let pendingText: (TextPart & { index: number })[] = []
 
   // 来源编号按搜索结果、打开的网页在回复中出现的顺序，与正文引用无关
   for (const block of reply.blocks) {
@@ -223,9 +247,14 @@ export const buildReplyView = (reply: AssistantMessage, streaming: boolean): Rep
     if (pendingText.length === 0) {
       return
     }
-    const { markdown } = joinTextBlocks(pendingText, registry)
+    const { markdown, parts } = joinTextBlocks(pendingText, registry)
     if (markdown.trim()) {
-      steps.push({ type: 'text', key: `text-${pendingText[0].index}`, markdown })
+      steps.push({
+        type: 'text',
+        key: `text-${pendingText[0].index}`,
+        markdown,
+        ...(parts ? { parts } : {}),
+      })
     }
     pendingText = []
   }
@@ -239,7 +268,7 @@ export const buildReplyView = (reply: AssistantMessage, streaming: boolean): Rep
       mergedThinking = null
     }
     if (block.type === 'text') {
-      pendingText.push({ index, text: block.text, citations: block.citations })
+      pendingText.push({ index, ...block })
       return
     }
     if (block.type === 'thinking') {
