@@ -1,5 +1,7 @@
+import { toLocalFileRef } from '../localFileRef.js'
 import type {
   AssistantBlockParam,
+  ImageGenerationBlock,
   FileBlockParam,
   MessageParam,
   MessageStreamEvent,
@@ -50,6 +52,7 @@ const toReplyBlock = (block: OutputBlockStart, now: number): ReplyBlock | null =
     case 'server_tool_use':
     case 'web_search_tool_result':
     case 'web_fetch_tool_result':
+    case 'image_generation':
       return block
     default:
       return null
@@ -111,6 +114,9 @@ export const applyEvent = (
         if (block.type === 'thinking' && delta.type === 'signature_delta') {
           return { ...block, signature: (block.signature ?? '') + delta.signature }
         }
+        if (block.type === 'image_generation' && delta.type === 'image_delta') {
+          return delta.block
+        }
         if (block.type === 'text' && delta.type === 'citations_delta') {
           return { ...block, citations: [...(block.citations ?? []), delta.citation] }
         }
@@ -158,6 +164,9 @@ export const settleReply = (
     if (reply.stopReason === 'refusal' && (block.type === 'thinking' || block.type === 'text')) {
       return []
     }
+    if (block.type === 'image_generation' && block.status === 'wip') {
+      return [{ ...block, status: block.images.length ? 'done' : 'failed' }]
+    }
     return block.type === 'thinking' && block.startedAt !== undefined && block.endedAt === undefined
       ? [{ ...block, endedAt: now }]
       : [block]
@@ -184,14 +193,14 @@ export const canContinueReply = (reply: AssistantMessage): boolean => {
         block.type === 'server_tool_use' ||
         block.type === 'web_search_tool_result' ||
         block.type === 'web_fetch_tool_result' ||
+        block.type === 'image_generation' ||
         (block.type === 'text' && block.isTemplate)
     )
   ) {
     return false
   }
   return (
-    reply.status === 'stopped' ||
-    (reply.status === 'done' && reply.stopReason === 'max_tokens')
+    reply.status === 'stopped' || (reply.status === 'done' && reply.stopReason === 'max_tokens')
   )
 }
 
@@ -263,7 +272,12 @@ const toAssistantParam = (
       continue
     }
     text = null
-    if (prefix && thinking && block.type === 'thinking') {
+    if (block.type === 'image_generation') {
+      // 生成图以 image_id 回传，便于后续轮次基于原提示词重新生成或明确编辑
+      if (block.images.length) {
+        content.push({ type: 'text', text: describeGeneratedImages(block) })
+      }
+    } else if (prefix && thinking && block.type === 'thinking') {
       // 续写保留本轮思考，历史轮次的思考省略。
       const { type, thinking, signature } = block
       content.push({ type, thinking, signature: signature ?? '' })
@@ -287,6 +301,15 @@ const toAssistantParam = (
     content: content.filter((block) => block.type !== 'text' || block.text !== ''),
   }
 }
+
+const describeGeneratedImages = (block: ImageGenerationBlock) =>
+  `
+
+[${block.tool === 'edit_image' ? 'Edited' : 'Generated'} image(s) shown to the user: ${block.images
+    .map((image) => `image_id=${toLocalFileRef(image.fileId)} (${image.width}x${image.height})`)
+    .join(', ')}; aspect ratio ${block.aspectRatio}; prompt: ${block.prompt.slice(0, 1500)}]
+
+`
 
 /** 历史中会进入请求上下文的轮次：提问后紧跟可用回答的才保留 */
 export const getContextRounds = (history: Message[]): [UserMessage, AssistantMessage][] => {

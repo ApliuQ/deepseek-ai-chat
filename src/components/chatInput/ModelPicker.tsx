@@ -3,6 +3,7 @@ import {
   getApiProvider,
   setDeepseekModel,
   setOpenaiModel,
+  sortOpenaiModelNames,
   useSettings,
 } from '../../services/settings.js'
 import { refreshModels } from '../../services/api/models.js'
@@ -29,13 +30,20 @@ export const ModelPicker = () => {
   }, [baseUrl, apiKey])
 
   return (
-    <div className={styles.picker} onPointerDown={refresh} onFocus={refresh}>
+    <div className={styles.picker} data-model-picker onPointerDown={refresh} onFocus={refresh}>
       <Select
         className={styles.trigger}
         ariaLabel={t('openaiModelLabel')}
         placeholder={t('openaiModelLabel')}
         value={model}
-        options={(models.length ? models : model ? [model] : []).map((id) => ({
+        options={(models.length
+          ? openai
+            ? sortOpenaiModelNames(models)
+            : models
+          : model
+            ? [model]
+            : []
+        ).map((id) => ({
           value: id,
           label: id,
         }))}

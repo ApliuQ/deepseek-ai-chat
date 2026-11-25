@@ -19,6 +19,13 @@ import {
 } from './openaiSearch.js'
 import { streamClientMessage } from './openaiClientSearch.js'
 import { createFileReader, READ_FILE_TOOL, type FileReaderTool } from './openaiFiles.js'
+import {
+  IMAGE_SYSTEM_PROMPT,
+  IMAGE_TOOLS,
+  IMAGE_TOOLS_OFF_PROMPT,
+  hasGeneratedImages,
+  type ImageToolHost,
+} from './openaiImages.js'
 import { buildResponsesRequest, responsesStreamEvents } from './openaiResponses.js'
 import {
   cachedSearchMethod,
@@ -42,11 +49,17 @@ export type OpenaiRequest = {
   stream_options: { include_usage: true }
   reasoning_effort?: 'high' | 'none'
   web_search_options?: Record<string, never>
-  tools?: (typeof WEB_SEARCH_TOOL | typeof FETCH_URL_TOOL | typeof READ_FILE_TOOL)[]
+  tools?: (
+    | typeof WEB_SEARCH_TOOL
+    | typeof FETCH_URL_TOOL
+    | typeof READ_FILE_TOOL
+    | (typeof IMAGE_TOOLS)[number]
+  )[]
   tool_choice?: 'auto' | 'none'
 }
 
 const fileReaders = new WeakMap<OpenaiRequest, FileReaderTool>()
+const imageHosts = new WeakMap<OpenaiRequest, ImageToolHost>()
 
 export const buildOpenaiRequest = async (
   messages: MessageParam[],
@@ -55,12 +68,26 @@ export const buildOpenaiRequest = async (
   search: boolean,
   loadFile: LocalFileLoader,
   signal: AbortSignal,
-  onAttachmentNotice?: (message: string) => void
+  onAttachmentNotice?: (message: string) => void,
+  imageHost?: ImageToolHost
 ): Promise<OpenaiRequest> => {
   if (!model) {
     throw new ApiError('protocol', 'Select a model in settings first')
   }
-  const mapped: OpenaiMessage[] = [{ role: 'system', content: 'You are a helpful assistant.' }]
+  const mapped: OpenaiMessage[] = [
+    {
+      role: 'system',
+      content: imageHost
+        ? `You are a helpful assistant.
+
+${IMAGE_SYSTEM_PROMPT}`
+        : hasGeneratedImages(messages)
+          ? `You are a helpful assistant.
+
+${IMAGE_TOOLS_OFF_PROMPT}`
+          : 'You are a helpful assistant.',
+    },
+  ]
   const readableFiles = new Set<string>()
   for (const message of messages) {
     signal.throwIfAborted()
@@ -82,6 +109,12 @@ export const buildOpenaiRequest = async (
           parts.push({ type: 'text', text: block.text })
         } else {
           const file = await loadFile(block.source.file_id)
+          if (file && imageHost && file.isImage) {
+            parts.push({
+              type: 'text',
+              text: `[Image attachment image_id=${block.source.file_id} name=${file.name}]`,
+            })
+          }
           if (file) {
             parts.push(
               ...(await toOpenaiFileParts(
@@ -114,10 +147,21 @@ export const buildOpenaiRequest = async (
     stream_options: { include_usage: true },
     reasoning_effort: thinking ? 'high' : 'none',
     ...(search ? { web_search_options: {} } : {}),
-    ...(readableFiles.size ? { tools: [READ_FILE_TOOL], tool_choice: 'auto' as const } : {}),
+    ...(readableFiles.size || imageHost
+      ? {
+          tools: [
+            ...(readableFiles.size ? [READ_FILE_TOOL] : []),
+            ...(imageHost ? IMAGE_TOOLS : []),
+          ],
+          tool_choice: 'auto' as const,
+        }
+      : {}),
   }
   if (readableFiles.size) {
     fileReaders.set(body, createFileReader(readableFiles, loadFile))
+  }
+  if (imageHost) {
+    imageHosts.set(body, imageHost)
   }
   return body
 }
@@ -366,25 +410,25 @@ export async function* streamOpenaiMessage(
   signal: AbortSignal
 ): AsyncGenerator<MessageStreamEvent> {
   const readFile = fileReaders.get(body)
+  const imageHost = imageHosts.get(body)
   const failureNotes = new Set<string>()
-  if (readFile && !body.web_search_options) {
+  if ((readFile || imageHost) && !body.web_search_options) {
     yield* streamClientMessage(
       root,
       apiKey,
       {
         ...body,
         web_search_options: undefined,
-        tools: [
-          READ_FILE_TOOL,
-          ...(body.web_search_options ? [WEB_SEARCH_TOOL, FETCH_URL_TOOL] : []),
-        ],
+        tools: [...(readFile ? [READ_FILE_TOOL] : []), ...(imageHost ? IMAGE_TOOLS : [])],
         tool_choice: 'auto',
       },
       signal,
       () => invalidateSearchMethod(root, body.model),
       undefined,
       readFile,
-      failureNotes
+      failureNotes,
+      undefined,
+      imageHost
     )
     return
   }
@@ -392,7 +436,7 @@ export async function* streamOpenaiMessage(
     yield* streamChatMessage(root, apiKey, body, signal)
     return
   }
-  const cached = readFile ? 'client' : cachedSearchMethod(root, body.model)
+  const cached = readFile || imageHost ? 'client' : cachedSearchMethod(root, body.model)
   const tiers = ['chat', 'responses', 'client'] as const
   let remaining: SearchMethod[] = tiers.slice(tiers.indexOf(cached ?? 'client'))
   let needsDetection = cached === null
@@ -470,7 +514,8 @@ export async function* streamOpenaiMessage(
                 },
                 readFile,
                 failureNotes,
-                onSearchCompleted
+                onSearchCompleted,
+                imageHost
               )
       const terminal: MessageStreamEvent[] = []
       for await (const event of source) {

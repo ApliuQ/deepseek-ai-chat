@@ -3,6 +3,7 @@ import type { ApiErrorKind } from '../api/client.js'
 import type { ResponseDetails } from '../api/responseDetails.js'
 import type {
   ChatModel,
+  ImageGenerationBlock,
   MessageUsage,
   ServerToolBlock,
   StopDetails,
@@ -67,7 +68,7 @@ export type TextPart = {
 }
 
 /** 服务端工具调用与结果块按协议原样保存；历史请求只回传 read_link 调用与结果 */
-export type ReplyBlock = ThinkingPart | TextPart | ServerToolBlock
+export type ReplyBlock = ThinkingPart | TextPart | ServerToolBlock | ImageGenerationBlock
 
 /**
  * pending：已发出请求，还没收到事件；streaming：正在接收；

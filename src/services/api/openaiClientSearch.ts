@@ -7,6 +7,7 @@ import type { MessageStreamEvent, MessageUsage, StopReason } from './types.js'
 import { fetchBrowserUrl, searchBrowserWeb } from './browserWeb.js'
 import { createLiteralToolFilter, searchQuery, type OpenaiToolCall } from './openaiSearch.js'
 import { FILE_TOOL_ROUNDS, type FileReaderTool } from './openaiFiles.js'
+import { isImageToolName, runImageTool, type ImageToolHost } from './openaiImages.js'
 import type { WebSearchResult } from './types.js'
 
 import type { OpenaiRequest } from './openai.js'
@@ -239,7 +240,8 @@ export async function* streamClientMessage(
   beforeSearch?: () => Promise<void>,
   readFile?: FileReaderTool,
   failureNotes = new Set<string>(),
-  onSearchCompleted?: () => void
+  onSearchCompleted?: () => void,
+  imageTool?: ImageToolHost
 ): AsyncGenerator<MessageStreamEvent> {
   const messages = [...body.messages]
   const search = body.tools?.some((tool) => tool.function.name === 'web_search') ?? false
@@ -272,14 +274,19 @@ export async function* streamClientMessage(
   let completedSearch = false
   const roundLimit = () => translate('customSearchRoundLimit', { count: SEARCH_TOOL_ROUNDS })
   const maxRounds = search
-    ? SEARCH_TOOL_ROUNDS + (readFile ? FILE_TOOL_ROUNDS : 0)
+    ? SEARCH_TOOL_ROUNDS + (readFile || imageTool ? FILE_TOOL_ROUNDS : 0)
     : FILE_TOOL_ROUNDS
   for (let round = 0; ; round++) {
     signal.throwIfAborted()
     const canSearch = search && searchCalls < SEARCH_TOOL_ROUNDS && !searchUnavailable
     const canReadFile = !!readFile && round < FILE_TOOL_ROUNDS
+    const canImage = !!imageTool && round < FILE_TOOL_ROUNDS
     const tools = body.tools?.filter((tool) =>
-      tool.function.name === 'read_file' ? canReadFile : canSearch
+      isImageToolName(tool.function.name)
+        ? canImage
+        : tool.function.name === 'read_file'
+          ? canReadFile
+          : canSearch
     )
     const response = await completion(
       root,
@@ -368,7 +375,7 @@ export async function* streamClientMessage(
         }
       }
     }
-    if (!turn.calls.length || round >= maxRounds || (!canReadFile && !canSearch)) {
+    if (!turn.calls.length || round >= maxRounds || (!canReadFile && !canSearch && !canImage)) {
       const requestedSearch = turn.calls.some((call) => call.function.name === 'web_search')
       const requestedWebTool =
         requestedSearch || turn.calls.some((call) => call.function.name === 'fetch_url')
@@ -412,6 +419,20 @@ export async function* streamClientMessage(
       ...(turn.reasoning ? { reasoning_content: turn.reasoning } : {}),
     })
     for (const call of turn.calls) {
+      if (isImageToolName(call.function.name)) {
+        let result: Record<string, unknown>
+        try {
+          if (!imageTool || !canImage) {
+            throw new Error('Image tools are not enabled for this request')
+          }
+          result = yield* runImageTool(call, index++, imageTool, signal)
+        } catch (error) {
+          signal.throwIfAborted()
+          result = { error: error instanceof Error ? error.message : String(error) }
+        }
+        messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) })
+        continue
+      }
       if (call.function.name === 'read_file') {
         let result: Record<string, unknown>
         try {

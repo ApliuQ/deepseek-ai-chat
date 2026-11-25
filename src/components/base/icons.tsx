@@ -417,6 +417,28 @@ export const IconGlobeLanguageOutline14 = () => (
   </svg>
 )
 
+export const IconImageOutline14 = () => (
+  <svg width={14} height={14} viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect
+      x="1.25"
+      y="1.75"
+      width="11.5"
+      height="10.5"
+      rx="2"
+      stroke="currentColor"
+      strokeWidth="1.2"
+    />
+    <circle cx="4.75" cy="5.25" r="1.15" fill="currentColor" />
+    <path
+      d="M1.6 10.6L4.9 7.6L7.2 9.6L9.4 7.4L12.5 10.3"
+      stroke="currentColor"
+      strokeWidth="1.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+)
+
 export const IconLinkOutline16 = () => (
   <svg width={16} height={16} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path

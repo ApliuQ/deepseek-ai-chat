@@ -206,8 +206,35 @@ export type MessageUsage = {
   server_tool_use?: { web_search_requests: number; tool_search: number }
 }
 
+/** 网页生成或编辑后保存到本地的图片，fileId 为 IndexedDB 原件 id */
+export type GeneratedImage = {
+  fileId: string
+  name: string
+  mimeType: string
+  width: number
+  height: number
+}
+
+/** 自定义 API 模式的图片工具块（generate_image / edit_image），由网页执行并整体更新 */
+export type ImageGenerationBlock = {
+  type: 'image_generation'
+  id: string
+  tool: 'generate_image' | 'edit_image'
+  prompt: string
+  aspectRatio: string
+  count: number
+  status: 'wip' | 'done' | 'failed'
+  images: GeneratedImage[]
+  error?: string
+}
+
 /** content_block_start 携带的初始内容块；工具块已是完整内容 */
-export type OutputBlockStart = TextBlock | ThinkingBlock | ServerToolBlock | ToolUseBlock
+export type OutputBlockStart =
+  | TextBlock
+  | ThinkingBlock
+  | ServerToolBlock
+  | ToolUseBlock
+  | ImageGenerationBlock
 
 export type ContentBlockDelta =
   | { type: 'text_delta'; text: string }
@@ -215,6 +242,8 @@ export type ContentBlockDelta =
   | { type: 'signature_delta'; signature: string }
   | { type: 'citations_delta'; citation: TextCitation }
   | { type: 'input_json_delta'; partial_json: string }
+  /** 图片工具块的整体替换 */
+  | { type: 'image_delta'; block: ImageGenerationBlock }
 
 /** 流式事件：SSE 的 event 名与 JSON 的 type 相同，以 message_stop 结束，不发送 [DONE] */
 export type MessageStreamEvent =

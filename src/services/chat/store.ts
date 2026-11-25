@@ -6,6 +6,8 @@ import { ApiError, streamMessage } from '../api/client.js'
 import { buildOpenaiRequest, generateOpenaiTitle, streamOpenaiMessage } from '../api/openai.js'
 import type { LocalFileLoader } from '../api/openaiAttachments.js'
 import { isLocalFileRef, toLocalFileRef } from '../localFileRef.js'
+import { MAX_IMAGES_PER_REPLY, type ImageToolHost } from '../api/openaiImages.js'
+import { processImage } from '../images/processImage.js'
 import type { ChatModel, CreateMessageRequest } from '../api/types.js'
 import { extractFileIds, getFileErrorCode, isRetryableApiError } from '../api/errors.js'
 import {
@@ -1022,6 +1024,49 @@ const createLocalFileResolver =
       : undefined
   }
 
+/** 图片工具的宿主：按 image_id 读取本会话的附件或生成图，结果原件随会话落盘 */
+const createImageHost = (
+  sessionId: string,
+  root: string,
+  connection: ReturnType<typeof useSettings.getState>
+): ImageToolHost => ({
+  root,
+  apiKey: connection.apiKey ?? '',
+  model: connection.imageModel,
+  remaining: MAX_IMAGES_PER_REPLY,
+  process: processImage,
+  loadImage: async (ref) => {
+    if (!isLocalFileRef(ref)) {
+      return undefined
+    }
+    const id = ref.slice(toLocalFileRef('').length)
+    const messages = getSession(sessionId)?.messages ?? []
+    const name = messages
+      .flatMap((message) =>
+        message.role === 'user'
+          ? message.files.filter((file) => file.isImage)
+          : message.blocks.flatMap((block) =>
+              block.type === 'image_generation'
+                ? block.images.map((image) => ({ id: image.fileId, name: image.name }))
+                : []
+            )
+      )
+      .find((file) => file.id === id)?.name
+    if (!name) {
+      return undefined
+    }
+    const blob =
+      pendingFiles.get(sessionId)?.find((item) => item.id === id)?.blob ?? (await db.loadFile(id))
+    return blob ? { blob, name } : undefined
+  },
+  saveImage: async (blob) => {
+    const fileId = createId()
+    pendingFiles.set(sessionId, [...(pendingFiles.get(sessionId) ?? []), { id: fileId, blob }])
+    await db.saveFiles([{ id: fileId, blob }]).catch(db.reportStorageError('saveImage'))
+    return { fileId, imageId: toLocalFileRef(fileId) }
+  },
+})
+
 const updateOpenaiTitle = async (
   sessionId: string,
   reply: AssistantMessage,
@@ -1114,7 +1159,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
                 initial.search ?? false,
                 createLocalFileResolver(sessionId, localFiles),
                 controller.signal,
-                showToast
+                showToast,
+                connection.imageGen ? createImageHost(sessionId, openaiRoot, connection) : undefined
               ),
               controller.signal
             )
