@@ -16,6 +16,11 @@
     color: var(--dsw-alias-brand-primary-invert);
   }
 
+  /* 菜单展开时保持触发按钮可见，避免锚点隐藏导致菜单错位 */
+  &:has([aria-expanded='true']) .action {
+    display: flex;
+  }
+
   @media (hover: hover) {
     &:not(.active):hover {
       background-color: var(--dsw-specific-sidebar-nav-item-hover);
