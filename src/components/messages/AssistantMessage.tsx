@@ -1,6 +1,6 @@
 import { useTranslate } from '../../i18n/index.js'
 import clsx from 'clsx'
-import { memo } from 'react'
+import { Fragment, memo } from 'react'
 import { IconRefreshOutline16, IconWarningOutline16 } from '../base/icons.js'
 import { describeReply } from '../../services/chat/describe.js'
 import { canContinueReply } from '../../services/chat/reply.js'
@@ -18,6 +18,7 @@ import { ReadAloudButton } from './ReadAloudButton.js'
 import { CopyButton } from './CopyButton.js'
 import { ReplyArea } from './ReplyArea.js'
 import { GeneratedImages } from './GeneratedImages.js'
+import { ErrorResponseDetails } from './ErrorResponseDetails.js'
 import { useReplyView } from './useReplyView.js'
 import {
   BranchSwitcher,
@@ -72,16 +73,23 @@ export const AssistantMessage = memo(function AssistantMessage({
       {message.blocks.map((block) =>
         block.type === 'image_generation' ? <GeneratedImages key={block.id} block={block} /> : null
       )}
-      {answer ? (
-        <Markdown
-          className="ds-assistant-message-main-content"
-          content={answer.markdown}
-          loading={streaming}
-          cacheKey={message.id}
-          disableLink={false}
-          sources={view.sources}
-        />
-      ) : null}
+      {answer
+        ? (answer.parts ?? [{ markdown: answer.markdown }]).map((part, index, parts) => (
+            <Fragment key={index}>
+              <Markdown
+                className="ds-assistant-message-main-content"
+                content={part.markdown}
+                loading={streaming && index === parts.length - 1}
+                cacheKey={answer.parts ? `${message.id}-answer-${index}` : message.id}
+                disableLink={false}
+                sources={view.sources}
+              />
+              {part.responseDetails ? (
+                <ErrorResponseDetails details={part.responseDetails} />
+              ) : null}
+            </Fragment>
+          ))
+        : null}
       {waiting ? (
         <div className={styles.waiting}>
           {[0, 1, 2].map((index) => (
@@ -129,6 +137,9 @@ export const AssistantMessage = memo(function AssistantMessage({
             ) : null}
           </span>
         </div>
+      ) : null}
+      {notice && message.error?.responseDetails ? (
+        <ErrorResponseDetails details={message.error.responseDetails} />
       ) : null}
       {!streaming && !refused && view.searchResults.length > 0 ? (
         <div

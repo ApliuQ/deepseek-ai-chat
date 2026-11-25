@@ -2,7 +2,8 @@
   margin-bottom: 10px;
 }
 
-.title {
+.title,
+.errorDetailsToggle {
   display: flex;
   align-items: center;
   height: 34px;
@@ -14,6 +15,26 @@
 
   &:hover {
     color: var(--dsw-alias-label-primary);
+  }
+}
+
+.errorDetailsToggle {
+  border: 0;
+  padding: 0;
+  background: none;
+}
+
+.errorDetails {
+  max-height: 300px;
+  overflow: auto;
+  border-left: 1px solid var(--dsw-alias-label-dimmed);
+  padding: 0 12px;
+  color: var(--dsw-alias-label-secondary);
+
+  & pre {
+    margin: 4px 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 }
 

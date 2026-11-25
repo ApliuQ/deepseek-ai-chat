@@ -1,6 +1,6 @@
 import { useTranslate } from '../../i18n/index.js'
 import clsx from 'clsx'
-import { memo, useEffect, useState, type ReactNode } from 'react'
+import { Fragment, memo, useEffect, useState, type ReactNode } from 'react'
 import {
   IconBrowseOutline16,
   IconBrowseWarningOutline16,
@@ -30,6 +30,7 @@ import {
 } from '../../services/chat/view.js'
 import { Tooltip } from '../base/Tooltip.js'
 import { Markdown } from '../markdown/Markdown.js'
+import { ErrorResponseDetails } from './ErrorResponseDetails.js'
 import { SiteThumbnails } from '../search/SiteLogo.js'
 import { toggleSearchPanel, useSearchPanel } from '../search/searchPanelState.js'
 import styles from './ReplyArea.module.css'
@@ -141,13 +142,20 @@ const StepItem = ({
     case 'text':
       return (
         <ContentItem isLast={isLast} active={false}>
-          <Markdown
-            content={step.markdown}
-            loading={streaming && isLast}
-            cacheKey={`${message.id}-${step.key}`}
-            disableLink={false}
-            sources={sources}
-          />
+          {(step.parts ?? [{ markdown: step.markdown }]).map((part, index, parts) => (
+            <Fragment key={index}>
+              <Markdown
+                content={part.markdown}
+                loading={streaming && isLast && index === parts.length - 1}
+                cacheKey={`${message.id}-${step.key}${step.parts ? `-${index}` : ''}`}
+                disableLink={false}
+                sources={sources}
+              />
+              {part.responseDetails ? (
+                <ErrorResponseDetails details={part.responseDetails} />
+              ) : null}
+            </Fragment>
+          ))}
         </ContentItem>
       )
     case 'search':

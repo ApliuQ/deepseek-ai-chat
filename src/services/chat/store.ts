@@ -1241,6 +1241,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             message: error.message,
             status: error.status,
             localMessage: error.localMessage,
+            ...(openai && error.responseDetails ? { responseDetails: error.responseDetails } : {}),
           })
         } else {
           reply = settleReply(reply, 'error', Date.now(), {

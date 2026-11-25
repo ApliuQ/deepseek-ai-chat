@@ -2,9 +2,11 @@ import { translate } from '../../i18n/index.js'
 import { ApiError } from './client.js'
 import {
   customRequestError,
+  requireCustomEventStream,
   requestCustomModel,
   requestCustomModelWithTokenLimit,
 } from './customRequest.js'
+import { captureResponseDetails } from './responseDetails.js'
 import { readServerSentEvents } from './sse.js'
 import type { MessageParam, MessageStreamEvent, MessageUsage, StopReason } from './types.js'
 import { toOpenaiFileParts, type LocalFileLoader, type OpenaiPart } from './openaiAttachments.js'
@@ -201,7 +203,8 @@ export async function* openaiStreamEvents(
   stream: ReadableStream<Uint8Array>,
   model: string,
   signal: AbortSignal,
-  hostedSearch = false
+  hostedSearch = false,
+  apiKey?: string
 ): AsyncGenerator<MessageStreamEvent> {
   let started = false
   let index = -1
@@ -252,13 +255,23 @@ export async function* openaiStreamEvents(
       chunk = record(JSON.parse(frame.data))
     } catch {
       if (frame.event === 'error') {
-        throw new ApiError('stream', frame.data)
+        throw new ApiError(
+          'stream',
+          frame.data,
+          undefined,
+          captureResponseDetails(frame.data, undefined, apiKey)
+        )
       }
       throw new ApiError('protocol', 'Invalid chat completion event')
     }
     const error = record(chunk?.error)
-    if (error || frame.event === 'error') {
-      throw new ApiError('stream', typeof error?.message === 'string' ? error.message : frame.data)
+    if (chunk?.error || frame.event === 'error') {
+      throw new ApiError(
+        'stream',
+        typeof error?.message === 'string' ? error.message : frame.data,
+        undefined,
+        captureResponseDetails(frame.data, undefined, apiKey)
+      )
     }
     if (!chunk) {
       throw new ApiError('protocol', 'Invalid chat completion event')
@@ -369,10 +382,12 @@ export async function* streamChatMessage(
 ): AsyncGenerator<MessageStreamEvent> {
   try {
     const response = await completion(root, apiKey, body, signal)
-    if (!response.body || !response.headers.get('Content-Type')?.includes('text/event-stream')) {
-      throw new ApiError('protocol', 'Expected a chat completion event stream')
-    }
-    yield* openaiStreamEvents(response.body, body.model, signal, hostedSearch)
+    const stream = await requireCustomEventStream(
+      response,
+      'Expected a chat completion event stream',
+      apiKey
+    )
+    yield* openaiStreamEvents(stream, body.model, signal, hostedSearch, apiKey)
   } catch (error) {
     signal.throwIfAborted()
     if (error instanceof SearchNotExecuted) {
@@ -454,13 +469,12 @@ export async function* streamOpenaiMessage(
                 body: JSON.stringify(buildResponsesRequest(body, !withoutSearch)),
                 signal,
               })
-              if (
-                !response.body ||
-                !response.headers.get('Content-Type')?.includes('text/event-stream')
-              ) {
-                throw new ApiError('protocol', 'Expected a Responses event stream')
-              }
-              yield* responsesStreamEvents(response.body, body.model, signal, onSearchCompleted)
+              const stream = await requireCustomEventStream(
+                response,
+                'Expected a Responses event stream',
+                apiKey
+              )
+              yield* responsesStreamEvents(stream, body.model, signal, onSearchCompleted, apiKey)
             })()
           : tier === 'chat' || withoutSearch
             ? streamChatMessage(
@@ -575,13 +589,18 @@ export async function* streamOpenaiMessage(
         started = true
       }
       const endpoint = `${root}/${tier === 'responses' ? 'responses' : 'chat/completions'}`
-      const failure = customRequestError('customModelRequest', endpoint, error, apiKey).message
+      const { message: failure, responseDetails } = customRequestError(
+        'customModelRequest',
+        endpoint,
+        error,
+        apiKey
+      )
       if (!failureNotes.has(failure)) {
         failureNotes.add(failure)
         yield {
           type: 'content_block_start',
           index: nextIndex,
-          content_block: { type: 'text', text: `\n\n> ${failure}\n\n` },
+          content_block: { type: 'text', text: `\n\n> ${failure}\n\n`, responseDetails },
         }
         yield { type: 'content_block_stop', index: nextIndex++ }
       }

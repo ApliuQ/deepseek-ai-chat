@@ -76,6 +76,8 @@ export const zh = {
   customExaSearch: '联网搜索（Exa）',
   customReadWebpage: '读取网页',
   customRequestFailed: '{operation}失败：{reason}。请求地址：{url}',
+  customResponseDetails: '响应详情',
+  customResponseTruncated: '响应已截断',
   customRequestUnknownUrl: '无效地址',
   customRequestHttpReason: '服务返回 HTTP {status}',
   customRequestNetworkReason: '网络连接失败，或请求被浏览器拦截。请检查网络后重试',

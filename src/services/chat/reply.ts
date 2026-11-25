@@ -36,7 +36,12 @@ const toFileBlocks = (files: FileAttachment[]): FileBlockParam[] =>
 const toReplyBlock = (block: OutputBlockStart, now: number): ReplyBlock | null => {
   switch (block.type) {
     case 'text':
-      return { type: 'text', text: block.text, citations: block.citations ?? [] }
+      return {
+        type: 'text',
+        text: block.text,
+        citations: block.citations ?? [],
+        ...(block.responseDetails ? { responseDetails: block.responseDetails } : {}),
+      }
     case 'thinking':
       return {
         type: 'thinking',

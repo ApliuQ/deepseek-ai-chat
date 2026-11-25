@@ -1,4 +1,5 @@
 import { ApiError } from './client.js'
+import { captureResponseDetails } from './responseDetails.js'
 import { readServerSentEvents } from './sse.js'
 import { createLiteralToolFilter, SearchNotExecuted } from './openaiSearch.js'
 import type { OpenaiRequest } from './openai.js'
@@ -41,7 +42,8 @@ export async function* responsesStreamEvents(
   stream: ReadableStream<Uint8Array>,
   model: string,
   signal: AbortSignal,
-  onSearchCompleted?: () => void
+  onSearchCompleted?: () => void,
+  apiKey?: string
 ): AsyncGenerator<MessageStreamEvent> {
   let index = -1
   let active: 'text' | 'thinking' | null = null
@@ -62,6 +64,14 @@ export async function* responsesStreamEvents(
     try {
       event = obj(JSON.parse(frame.data))
     } catch {
+      if (frame.event === 'error' || frame.event === 'response.failed') {
+        throw new ApiError(
+          'stream',
+          frame.data,
+          undefined,
+          captureResponseDetails(frame.data, undefined, apiKey)
+        )
+      }
       throw new ApiError('protocol', 'Invalid Responses event')
     }
     const type = event.type ?? frame.event
@@ -70,12 +80,20 @@ export async function* responsesStreamEvents(
       requestedSearch = true
       completedSearch ||= type === 'response.web_search_call.completed'
     }
-    if (event.error || type === 'error' || type === 'response.failed') {
+    if (
+      event.error ||
+      type === 'error' ||
+      type === 'response.failed' ||
+      frame.event === 'error' ||
+      frame.event === 'response.failed'
+    ) {
       throw new ApiError(
         'stream',
         String(
           obj(event.error ?? response.error).message ?? event.message ?? 'Responses request failed'
-        )
+        ),
+        undefined,
+        captureResponseDetails(frame.data, undefined, apiKey)
       )
     }
     if (!started) {
