@@ -78,8 +78,8 @@ test('image targets default to 1K, honor ratios, 2K and explicit sizes within li
     ratio: '2:1',
   })
   assert.deepEqual(plain(api.resolveImageTarget({ size: '4096x4096' })), {
-    width: 2048,
-    height: 2048,
+    width: 4096,
+    height: 4096,
     ratio: '1:1',
   })
   assert.equal(api.resolveImageTarget({ aspect_ratio: '10:1' }).ratio, '3.00:1')

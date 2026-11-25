@@ -15,9 +15,9 @@ const IMAGE_TIMEOUT = 180_000
 const RETRY_STATUS = new Set([408, 425, 429, 500, 502, 503, 504])
 const RETRY_LIMIT = 2
 const IMAGE_RETRY_DELAY = 2000
-/** 1K 的目标面积与 2K 的长边上限 */
+/** 1K 的目标面积与 2K 的长边 */
 const BASE_AREA = 1024 * 1024
-const MAX_EDGE = 2048
+const EDGE_2K = 2048
 const MIN_EDGE = 64
 const MAX_RATIO = 3
 
@@ -40,7 +40,7 @@ const sharedProperties = {
   size: {
     type: 'string',
     description:
-      'Exact WIDTHxHEIGHT in pixels, only when the user gives concrete pixel dimensions (long side max 2048). Overrides aspect_ratio and resolution.',
+      'Exact WIDTHxHEIGHT in pixels, only when the user gives concrete pixel dimensions . Overrides aspect_ratio and resolution.',
   },
   quality: { type: 'string', enum: ['low', 'medium', 'high', 'auto'] },
   output_format: {
@@ -189,7 +189,7 @@ const even16 = (value: number) => Math.max(MIN_EDGE, Math.round(value / 16) * 16
 
 const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a)
 
-/** 由比例、分辨率或明确像素计算目标尺寸：1K 约 1024x1024 面积，2K 长边 2048，均不超过 2048 */
+/** 由比例、分辨率或明确像素计算目标尺寸：1K 约 1024x1024 面积，2K 长边 2048；网页不设上限，服务端实际返回多大就用多大 */
 export const resolveImageTarget = (args: {
   aspect_ratio?: unknown
   resolution?: unknown
@@ -198,12 +198,9 @@ export const resolveImageTarget = (args: {
   const size =
     typeof args.size === 'string' ? /^\s*(\d+)\s*[x×*]\s*(\d+)\s*$/i.exec(args.size) : null
   if (size) {
-    let width = Number(size[1])
+    const width = Math.max(MIN_EDGE, Number(size[1]))
     const ratio = Math.min(MAX_RATIO, Math.max(1 / MAX_RATIO, width / Number(size[2]) || 1))
-    let height = Math.round(width / ratio)
-    const scale = Math.min(1, MAX_EDGE / Math.max(width, height))
-    width = Math.max(MIN_EDGE, Math.round(width * scale))
-    height = Math.max(MIN_EDGE, Math.round(height * scale))
+    const height = Math.max(MIN_EDGE, Math.round(width / ratio))
     const divisor = gcd(width, height)
     return { width, height, ratio: `${width / divisor}:${height / divisor}` }
   }
@@ -221,11 +218,11 @@ export const resolveImageTarget = (args: {
         : `${value.toFixed(2)}:1`
   if (args.resolution === '2K') {
     return value >= 1
-      ? { width: MAX_EDGE, height: even16(MAX_EDGE / value), ratio }
-      : { width: even16(MAX_EDGE * value), height: MAX_EDGE, ratio }
+      ? { width: EDGE_2K, height: even16(EDGE_2K / value), ratio }
+      : { width: even16(EDGE_2K * value), height: EDGE_2K, ratio }
   }
-  const width = Math.min(MAX_EDGE, even16(Math.sqrt(BASE_AREA * value)))
-  const height = Math.min(MAX_EDGE, even16(Math.sqrt(BASE_AREA / value)))
+  const width = even16(Math.sqrt(BASE_AREA * value))
+  const height = even16(Math.sqrt(BASE_AREA / value))
   return { width, height, ratio }
 }
 
@@ -602,7 +599,7 @@ export async function* runImageTool(
       : {}),
     ...(lower
       ? {
-          note: 'The image service returned a lower resolution than requested (its current maximum is about 1.5K, ~1.57 megapixels). The image was not upscaled; tell the user the actual size.',
+          note: 'The image service returned a lower resolution than requested. The image was kept at its actual size (not upscaled); tell the user the actual size.',
         }
       : {}),
     instruction:
