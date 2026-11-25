@@ -17,7 +17,13 @@ import {
 } from './openaiSearch.js'
 import { streamClientMessage } from './openaiClientSearch.js'
 import { createFileReader, READ_FILE_TOOL, type FileReaderTool } from './openaiFiles.js'
-import { IMAGE_SYSTEM_PROMPT, IMAGE_TOOLS, type ImageToolHost } from './openaiImages.js'
+import {
+  IMAGE_SYSTEM_PROMPT,
+  IMAGE_TOOLS,
+  IMAGE_TOOLS_OFF_PROMPT,
+  hasGeneratedImages,
+  type ImageToolHost,
+} from './openaiImages.js'
 import { buildResponsesRequest, responsesStreamEvents } from './openaiResponses.js'
 import {
   cachedSearchMethod,
@@ -73,7 +79,11 @@ export const buildOpenaiRequest = async (
         ? `You are a helpful assistant.
 
 ${IMAGE_SYSTEM_PROMPT}`
-        : 'You are a helpful assistant.',
+        : hasGeneratedImages(messages)
+          ? `You are a helpful assistant.
+
+${IMAGE_TOOLS_OFF_PROMPT}`
+          : 'You are a helpful assistant.',
     },
   ]
   const readableFiles = new Set<string>()

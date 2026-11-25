@@ -1,6 +1,11 @@
 import { ApiError } from './client.js'
 import type { OpenaiToolCall } from './openaiSearch.js'
-import type { GeneratedImage, ImageGenerationBlock, MessageStreamEvent } from './types.js'
+import type {
+  GeneratedImage,
+  ImageGenerationBlock,
+  MessageParam,
+  MessageStreamEvent,
+} from './types.js'
 import type {
   ImageOutputFormat,
   ImageProcessOptions,
@@ -169,6 +174,19 @@ export const IMAGE_SYSTEM_PROMPT = [
   'When the user is unhappy with a generated image and adds feedback, call generate_image again with the original request plus the feedback. Use edit_image with the previous generated image as target only when the user explicitly asks to modify that image while keeping the rest.',
   'After the tool returns, reply briefly in the user’s language; do not output image links or markdown images. If the result note says the service could not reach the requested resolution, tell the user the actual size.',
 ].join('\n')
+
+/** 生图开关关闭但历史里有生成图时，避免模型照着历史去调用不存在的图片工具而返回空回答 */
+export const IMAGE_TOOLS_OFF_PROMPT =
+  'Image generation tools are currently turned off: you cannot call generate_image or edit_image in this reply. If the user asks for a new or edited image, answer in text and tell them to turn on the Image (生成图片) switch below the input box.'
+
+export const hasGeneratedImages = (messages: MessageParam[]) =>
+  messages.some(
+    (message) =>
+      message.role === 'assistant' &&
+      message.content.some(
+        (block) => block.type === 'text' && block.text.includes('image(s) shown to the user')
+      )
+  )
 
 export type ImageToolHost = {
   root: string
