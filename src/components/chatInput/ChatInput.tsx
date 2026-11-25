@@ -2,12 +2,19 @@ import clsx from 'clsx'
 import { memo, useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import {
   IconGlobeLanguageOutline14,
+  IconImageOutline14,
   IconPaperclipOutline16,
   IconSendOutline16,
   IconStopFill16,
   IconThinkOutline14,
 } from '../base/icons.js'
-import { getApiProvider, setSearch, setThinking, useSettings } from '../../services/settings.js'
+import {
+  getApiProvider,
+  setImageGen,
+  setSearch,
+  setThinking,
+  useSettings,
+} from '../../services/settings.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { sendMessage, stopReply, useChatStore } from '../../services/chat/store.js'
 import {
@@ -55,26 +62,42 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const isMobile = useIsMobile()
   const search = useSettings((state) => state.search)
   const custom = useSettings((state) => getApiProvider(state.baseUrl) === 'openai')
+  const imageGen = useSettings((state) => state.imageGen)
+  const modelId = useSettings((state) => (custom ? state.openaiModel : state.deepseekModel))
+  const rowRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const togglesRef = useRef<HTMLDivElement>(null)
 
+  // 先按完整文字排版；开关或模型名放不下时，开关一起改为仅图标，剩余宽度留给模型选择框。
   useLayoutEffect(() => {
+    const row = rowRef.current
     const toggles = togglesRef.current
-    if (!toggles) {
+    if (!row || !toggles) {
       return
     }
 
     const updateLabels = () => {
       toggles.classList.remove(styles.collapsedToggles)
-      toggles.classList.toggle(styles.collapsedToggles, toggles.scrollWidth > toggles.clientWidth)
+      const picker = row.querySelector<HTMLElement>('[data-model-picker]')
+      const label = picker?.querySelector<HTMLElement>('button > span')
+      // 模型名超过选择框最大宽度时本来就会截断，不必收起开关
+      const truncated =
+        !!picker &&
+        !!label &&
+        label.scrollWidth > label.clientWidth + 1 &&
+        picker.clientWidth < parseFloat(getComputedStyle(picker).maxWidth) - 1
+      toggles.classList.toggle(
+        styles.collapsedToggles,
+        truncated || toggles.scrollWidth > toggles.clientWidth || row.scrollWidth > row.clientWidth
+      )
     }
 
     updateLabels()
     const observer = new ResizeObserver(updateLabels)
-    observer.observe(toggles)
+    observer.observe(row)
     return () => observer.disconnect()
-  }, [t])
+  }, [t, custom, modelId])
 
   const acceptFiles = (files: File[]) => {
     if (files.length === 0 || useChatStore.getState().importingHistory || !ensureApiKey()) {
@@ -201,8 +224,8 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
           {`${text}\n`}
         </div>
       </div>
-      <div className={clsx(styles.functionRow, styles.withModel)}>
-        {/* 深度思考 / 智能搜索开关，tooltip 在按钮上方 */}
+      <div ref={rowRef} className={clsx(styles.functionRow, styles.withModel)}>
+        {/* 深度思考 / 智能搜索 / 生成图片开关，tooltip 在按钮上方；生成图片仅自定义 API 模式 */}
         <div ref={togglesRef} className={styles.toggles}>
           <Tooltip content={t('deactivatedThinkTooltip')}>
             <button
@@ -228,6 +251,20 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
               <span className={styles.toggleLabel}>{t('search')}</span>
             </button>
           </Tooltip>
+          {custom ? (
+            <Tooltip content={t('imageGenTooltip')}>
+              <button
+                type="button"
+                className={clsx(styles.toggle, imageGen && styles.selected)}
+                aria-label={t('imageGen')}
+                aria-pressed={imageGen}
+                onClick={() => setImageGen(!imageGen)}
+              >
+                <IconImageOutline14 />
+                <span className={styles.toggleLabel}>{t('imageGen')}</span>
+              </button>
+            </Tooltip>
+          ) : null}
         </div>
         <div className={styles.right}>
           <ModelPicker />

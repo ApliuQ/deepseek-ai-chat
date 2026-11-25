@@ -17,6 +17,7 @@ import { toggleSearchPanel, useSearchPanel } from '../search/searchPanelState.js
 import { ReadAloudButton } from './ReadAloudButton.js'
 import { CopyButton } from './CopyButton.js'
 import { ReplyArea } from './ReplyArea.js'
+import { GeneratedImages } from './GeneratedImages.js'
 import { useReplyView } from './useReplyView.js'
 import {
   BranchSwitcher,
@@ -67,6 +68,9 @@ export const AssistantMessage = memo(function AssistantMessage({
           streaming={streaming}
           hasResponse={!!responseText}
         />
+      )}
+      {message.blocks.map((block) =>
+        block.type === 'image_generation' ? <GeneratedImages key={block.id} block={block} /> : null
       )}
       {answer ? (
         <Markdown

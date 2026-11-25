@@ -21,6 +21,47 @@ test('models are sorted naturally without case sensitivity and selection is reta
   assert.equal(api.useSettings.getState().openaiModel, '')
 })
 
+test('custom models hide image models and follow the vendor group order', async () => {
+  const api = await loadApi()
+  assert.deepEqual(
+    Array.from(
+      api.sortOpenaiModelNames([
+        'qwen-max',
+        'glm-4.6',
+        'deepseek-v4.1-flash-1017',
+        'swe-2-flash',
+        'gemini-3.8-flash',
+        'claude-haiku-5-5',
+        'Claude-Opus-5',
+        'grok-4.7',
+        'gpt-6.2-sol',
+        'gpt-6-luna',
+        'gpt-image-2.6-sunburst',
+        'GPT-IMAGE-2',
+        'abc-model',
+        'openrouter/gpt-5',
+      ])
+    ),
+    [
+      'gpt-6-luna',
+      'gpt-6.2-sol',
+      'openrouter/gpt-5',
+      'grok-4.7',
+      'claude-haiku-5-5',
+      'Claude-Opus-5',
+      'gemini-3.8-flash',
+      'swe-2-flash',
+      'deepseek-v4.1-flash-1017',
+      'glm-4.6',
+      'abc-model',
+      'qwen-max',
+    ]
+  )
+  api.setConnection('key', 'https://gateway.test', ['gpt-image-2', 'zeta', 'grok-4'])
+  assert.deepEqual(Array.from(api.useSettings.getState().openaiModels), ['grok-4', 'zeta'])
+  assert.equal(api.useSettings.getState().openaiModel, 'grok-4')
+})
+
 test('refresh fills an empty list, deduplicates requests and reuses a fresh list', async () => {
   const calls = []
   const api = await loadApi({

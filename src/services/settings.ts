@@ -7,7 +7,7 @@ export type Locale = 'zh-CN' | 'en-US'
 /** 主题偏好；默认跟随系统 */
 export type ThemePreference = 'light' | 'dark' | 'system'
 
-/** 本机设置，存 localStorage：API Key、语言、主题、位置、朗读音色、深度思考与智能搜索开关、侧边栏收起状态 */
+/** 本机设置，存 localStorage：API Key、语言、主题、位置、朗读音色、深度思考 / 智能搜索 / 生成图片开关、图片模型、侧边栏收起状态 */
 type Settings = {
   apiKey: string | null
   baseUrl: string
@@ -21,6 +21,8 @@ type Settings = {
   ttsVoice: TtsVoice
   thinking: boolean
   search: boolean
+  imageGen: boolean
+  imageModel: string
   siderCollapsed: boolean
 }
 
@@ -35,6 +37,8 @@ const KEYS = {
   ttsVoice: 'chat-demo:tts-voice',
   thinking: 'chat-demo:thinking',
   search: 'chat-demo:search',
+  imageGen: 'chat-demo:image-gen',
+  imageModel: 'chat-demo:image-model',
   siderCollapsed: 'chat-demo:sider-collapsed',
 } as const
 
@@ -146,6 +150,9 @@ const initialBaseUrl = (): string => {
   return getDefaultBaseUrl()
 }
 
+/** 自定义 API 模式下生成图片使用的默认图片模型 */
+export const DEFAULT_IMAGE_MODEL = 'gpt-image-2.6-sunburst'
+
 export const useSettings = create<Settings>(() => ({
   apiKey: read(KEYS.apiKey),
   baseUrl: initialBaseUrl(),
@@ -159,6 +166,8 @@ export const useSettings = create<Settings>(() => ({
   ttsVoice: initialTtsVoice(),
   thinking: read(KEYS.thinking) === 'true',
   search: read(KEYS.search) === 'true',
+  imageGen: read(KEYS.imageGen) === 'true',
+  imageModel: read(KEYS.imageModel)?.trim() || DEFAULT_IMAGE_MODEL,
   siderCollapsed: read(KEYS.siderCollapsed) === 'true',
 }))
 
@@ -224,8 +233,23 @@ export const sortModelNames = (models: string[]): string[] =>
     a.localeCompare(b, 'en', { sensitivity: 'base', numeric: true })
   )
 
+/** 自定义模式模型分组顺序：ID 包含关键词即归组（不区分大小写），取第一个命中的组 */
+const OPENAI_MODEL_GROUPS = ['gpt', 'grok', 'claude', 'gemini', 'swe', 'deepseek', 'glm']
+
+const openaiModelGroup = (model: string) => {
+  const id = model.toLowerCase()
+  const index = OPENAI_MODEL_GROUPS.findIndex((keyword) => id.includes(keyword))
+  return index === -1 ? OPENAI_MODEL_GROUPS.length : index
+}
+
+/** 自定义模式模型列表：去掉图片模型，按分组排序，组内与其余模型按名称自然排序 */
+export const sortOpenaiModelNames = (models: string[]): string[] =>
+  sortModelNames(models.filter((model) => !/image/i.test(model))).sort(
+    (a, b) => openaiModelGroup(a) - openaiModelGroup(b)
+  )
+
 export const setOpenaiModels = (models: string[]) => {
-  const sorted = sortModelNames(models)
+  const sorted = sortOpenaiModelNames(models)
   const selected = useSettings.getState().openaiModel
   useSettings.setState({ openaiModels: sorted })
   if (!sorted.includes(selected)) {
@@ -241,6 +265,17 @@ export const setThinking = (thinking: boolean) => {
 export const setSearch = (search: boolean) => {
   write(KEYS.search, String(search))
   useSettings.setState({ search })
+}
+
+export const setImageGen = (imageGen: boolean) => {
+  write(KEYS.imageGen, String(imageGen))
+  useSettings.setState({ imageGen })
+}
+
+export const setImageModel = (value: string) => {
+  const imageModel = value.trim() || DEFAULT_IMAGE_MODEL
+  write(KEYS.imageModel, imageModel === DEFAULT_IMAGE_MODEL ? null : imageModel)
+  useSettings.setState({ imageModel })
 }
 
 export const setSiderCollapsed = (siderCollapsed: boolean) => {

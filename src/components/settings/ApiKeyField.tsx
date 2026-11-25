@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react'
 import { IconEditOutline16, IconEyeOutline16 } from '../base/icons.js'
-import { getDefaultBaseUrl, useSettings } from '../../services/settings.js'
+import {
+  DEFAULT_IMAGE_MODEL,
+  getApiProvider,
+  getDefaultBaseUrl,
+  setImageModel,
+  useSettings,
+} from '../../services/settings.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { IconButton } from '../base/IconButton.js'
 import { useApiKeyForm } from './useApiKeyForm.js'
@@ -150,4 +156,55 @@ export const ApiKeyConfirm = ({ editor: { showInput, form } }: { editor: ApiKeyE
       {form.verifying ? t('apiKeyVerifying') : t('confirm')}
     </button>
   ) : null
+}
+
+/** 图片模型：仅自定义 API 模式显示，失焦或回车保存，空值恢复默认 */
+export const ImageModelField = () => {
+  const t = useTranslate()
+  const imageModel = useSettings((state) => state.imageModel)
+  const openai = useSettings((state) => getApiProvider(state.baseUrl) === 'openai')
+  const [value, setValue] = useState(imageModel)
+  useEffect(() => setValue(imageModel), [imageModel])
+  if (!openai) {
+    return null
+  }
+  const save = (next: string) => {
+    setImageModel(next)
+    setValue(next.trim() || DEFAULT_IMAGE_MODEL)
+  }
+  return (
+    <div className={styles.cell}>
+      <div className={styles.apiKey}>
+        <label className={styles.label} htmlFor="connection-image-model">
+          {t('imageModelLabel')}
+        </label>
+        <div className={styles.apiKeyInput}>
+          <input
+            id="connection-image-model"
+            type="text"
+            placeholder={DEFAULT_IMAGE_MODEL}
+            autoComplete="off"
+            spellCheck={false}
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            onBlur={() => save(value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                save(value)
+              }
+            }}
+          />
+          <button
+            type="button"
+            className={styles.confirm}
+            disabled={value === DEFAULT_IMAGE_MODEL}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => save(DEFAULT_IMAGE_MODEL)}
+          >
+            {t('baseUrlDefault')}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
