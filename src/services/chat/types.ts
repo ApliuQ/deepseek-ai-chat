@@ -1,5 +1,6 @@
 import type { TranslationMessage } from '../../i18n/index.js'
 import type { ApiErrorKind } from '../api/client.js'
+import type { ResponseDetails } from '../api/responseDetails.js'
 import type {
   ChatModel,
   MessageUsage,
@@ -60,6 +61,7 @@ export type TextPart = {
   type: 'text'
   text: string
   citations?: TextCitation[]
+  responseDetails?: ResponseDetails
   /** 服务端提示文案，仅用于展示，不作为模型回答参与上下文或续写。 */
   isTemplate?: boolean
 }
@@ -100,6 +102,7 @@ export type AssistantMessage = MessageBranch & {
     message: string
     status?: number
     localMessage?: TranslationMessage
+    responseDetails?: ResponseDetails
     /** 仅 upload：重新上传是否可能成功（网络、限流、服务端繁忙）；过大、格式不支持为 false */
     retryable?: boolean
   }

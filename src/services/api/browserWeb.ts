@@ -1,5 +1,6 @@
 import { ApiError } from './client.js'
 import { customRequestError } from './customRequest.js'
+import { captureResponseDetails } from './responseDetails.js'
 import { ServerSentEventDecoder } from './sse.js'
 import type { WebSearchResult } from './types.js'
 
@@ -18,7 +19,8 @@ const download = async (
   url: string,
   init: RequestInit,
   signal: AbortSignal,
-  operation: 'customExaSearch' | 'customReadWebpage'
+  operation: 'customExaSearch' | 'customReadWebpage',
+  apiKey?: string
 ) => {
   const controller = new AbortController()
   const abort = () => controller.abort(signal.reason)
@@ -33,8 +35,13 @@ const download = async (
       signal: controller.signal,
     })
     if (!response.ok) {
-      await response.body?.cancel().catch(() => {})
-      throw new ApiError('http', '', response.status)
+      const body = await response.text().catch(() => '')
+      throw new ApiError(
+        'http',
+        '',
+        response.status,
+        captureResponseDetails(body, response.status, apiKey)
+      )
     }
     if (!response.body) {
       throw new Error('Empty web service response')
@@ -55,14 +62,18 @@ const download = async (
         }
         text += decoder.decode(value, { stream: true })
       }
-      return { text: text + decoder.decode(), type: response.headers.get('Content-Type') ?? '' }
+      return {
+        text: text + decoder.decode(),
+        type: response.headers.get('Content-Type') ?? '',
+        status: response.status,
+      }
     } finally {
       await reader.cancel().catch(() => {})
       reader.releaseLock()
     }
   } catch (error) {
     signal.throwIfAborted()
-    throw customRequestError(operation, url, error, undefined, controller.signal.aborted)
+    throw customRequestError(operation, url, error, apiKey, controller.signal.aborted)
   } finally {
     clearTimeout(timer)
     signal.removeEventListener('abort', abort)
@@ -72,7 +83,8 @@ const download = async (
 const exa = async (
   name: 'web_search_exa' | 'web_fetch_exa',
   args: Record<string, unknown>,
-  signal: AbortSignal
+  signal: AbortSignal,
+  apiKey?: string
 ) => {
   const operation = name === 'web_search_exa' ? 'customExaSearch' : 'customReadWebpage'
   const response = await download(
@@ -91,15 +103,29 @@ const exa = async (
       }),
     },
     signal,
-    operation
+    operation,
+    apiKey
   )
+  const streaming = response.type.includes('text/event-stream')
+  let errorBody = streaming ? '' : response.text
   try {
-    const frames = response.type.includes('text/event-stream')
-      ? new ServerSentEventDecoder()
-          .push(`${response.text}\n\n`)
-          .map((event) => JSON.parse(event.data))
-      : [JSON.parse(response.text)]
-    const frame = frames.find((item) => item.id === 1)
+    const frames = streaming
+      ? new ServerSentEventDecoder().push(`${response.text}\n\n`)
+      : [{ event: '', data: response.text }]
+    const matching = frames.find(({ event, data }) => {
+      if (event === 'error') {
+        return true
+      }
+      try {
+        const frame = JSON.parse(data)
+        return frame?.id === 1 || (frame?.id == null && !!frame?.error)
+      } catch (error) {
+        errorBody = data
+        throw error
+      }
+    })
+    errorBody = matching?.data ?? errorBody
+    const frame = matching?.event === 'error' || !matching ? undefined : JSON.parse(matching.data)
     const content: unknown = frame?.result?.content
     if (frame?.error || frame?.result?.isError || !Array.isArray(content)) {
       throw new Error('Invalid Exa response')
@@ -114,7 +140,17 @@ const exa = async (
     }
     return text
   } catch {
-    throw customRequestError(operation, EXA, new ApiError('protocol', ''))
+    throw customRequestError(
+      operation,
+      EXA,
+      new ApiError(
+        'protocol',
+        '',
+        undefined,
+        captureResponseDetails(errorBody, streaming ? undefined : response.status, apiKey)
+      ),
+      apiKey
+    )
   }
 }
 
@@ -131,7 +167,8 @@ const result = (url: string, title: string, snippet: string): WebSearchResult =>
 
 export const searchBrowserWeb = async (
   query: string,
-  signal: AbortSignal
+  signal: AbortSignal,
+  apiKey?: string
 ): Promise<WebSearchResult[]> => {
   const text = await exa(
     'web_search_exa',
@@ -141,7 +178,8 @@ export const searchBrowserWeb = async (
         'Find relevant trustworthy sources that answer this query. Return source titles, URLs and useful factual excerpts.',
       numResults: 5,
     },
-    signal
+    signal,
+    apiKey
   )
   return text
     .split(/(?=^Title: )/m)
@@ -171,16 +209,17 @@ export const searchBrowserWeb = async (
 
 export const fetchBrowserUrl = async (
   value: string,
-  signal: AbortSignal
+  signal: AbortSignal,
+  apiKey?: string
 ): Promise<WebSearchResult[]> => {
   const url = publicWebUrl(value)
   let text: string
   try {
-    text = await exa('web_fetch_exa', { urls: [url], maxCharacters: 12000 }, signal)
+    text = await exa('web_fetch_exa', { urls: [url], maxCharacters: 12000 }, signal, apiKey)
   } catch {
     signal.throwIfAborted()
     const endpoint = `https://r.jina.ai/${url}`
-    text = (await download(endpoint, { method: 'GET' }, signal, 'customReadWebpage')).text
+    text = (await download(endpoint, { method: 'GET' }, signal, 'customReadWebpage', apiKey)).text
     if (!text.trim()) {
       throw customRequestError('customReadWebpage', endpoint, new ApiError('protocol', ''))
     }

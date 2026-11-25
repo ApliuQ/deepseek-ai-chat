@@ -143,6 +143,102 @@ test('HTTP 400 after a model tool call does not restart the reply without search
   assert.doesNotMatch(text, /当前模型不支持联网搜索/)
 })
 
+test('a custom model HTTP failure preserves the full sanitized response separately from the notice', async () => {
+  const raw =
+    '{\n  "error": {"message":"denied", "request_id":"mock-123"},\n' +
+    '  "key":"current-fake-key", "Authorization":"Basic mock-basic",\n' +
+    '  "detail":"Bearer mock-bearer sk-mock_credential https://gateway.test/path?token=mock-query"\n}'
+  const api = await loadApi({
+    fetch: async () => new Response(raw, { status: 502 }),
+  })
+  const events = await collect(
+    api.streamOpenaiMessage(
+      'https://gateway.test/v1',
+      'current-fake-key',
+      await searchRequest(api),
+      signal()
+    )
+  )
+  const details = events.find((event) => event.content_block?.responseDetails).content_block
+    .responseDetails
+  assert.equal(details.status, 502)
+  assert.equal(details.truncated, false)
+  assert.equal(
+    details.body,
+    raw
+      .replace('current-fake-key', '***')
+      .replace('Basic mock-basic', '***')
+      .replace('Bearer mock-bearer', '***')
+      .replace('sk-mock_credential', '***')
+      .replace('?token=mock-query', '')
+  )
+  assert.doesNotMatch(replyText(events), /mock-123|denied/)
+})
+
+test('custom chat, client search and Responses preserve the failing SSE data, not other frames', async () => {
+  for (const [method, event, data] of [
+    ['chat', '', '{ "error": {"message":"failed","code":"mock"} }'],
+    ['client', 'event: error\n', 'plain failure\ndata: on a second line'],
+    ['responses', 'event: response.failed\n', '{ "response":{"error":{"message":"failed"}} }'],
+  ]) {
+    const api = await loadApi({
+      storage: {
+        getItem: () => JSON.stringify({ method, expires: Date.now() + 60000 }),
+        removeItem: () => {},
+      },
+      fetch: async (url) => {
+        if (
+          method !== 'client' &&
+          !url.endsWith(method === 'chat' ? '/chat/completions' : '/responses')
+        ) {
+          return chat({ content: 'Done' })
+        }
+        return new Response(sseBody(`: keepalive\n\n${event}data: ${data}\n\n`), {
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      },
+    })
+    const events = await collect(
+      api.streamOpenaiMessage('https://gateway.test/v1', 'key', await searchRequest(api), signal())
+    )
+    const details = events.find((event) => event.content_block?.responseDetails).content_block
+      .responseDetails
+    assert.equal(details.body, data.replace('\ndata: ', '\n'))
+    assert.equal(details.status, undefined)
+    assert.equal(details.truncated, false)
+  }
+})
+
+test('response details redact before truncating at the UTF-8 byte limit', async () => {
+  const raw = '字'.repeat(6824) + ' sk-mock-' + 'a'.repeat(80) + '文'.repeat(40)
+  const api = await loadApi({ fetch: async () => new Response(raw, { status: 400 }) })
+  await assert.rejects(
+    api.requestCustomModel('https://gateway.test/v1', 'mock-key', {}),
+    (error) => {
+      assert.equal(error.responseDetails.truncated, true)
+      assert.ok(Buffer.byteLength(error.responseDetails.body) <= 20 * 1024)
+      assert.ok(error.responseDetails.body.startsWith('字'.repeat(6824) + ' ***'))
+      assert.doesNotMatch(error.responseDetails.body, /sk-mock|�/)
+      return true
+    }
+  )
+})
+
+test('Exa preserves the relevant SSE error data and redacts echoed header arrays', async () => {
+  const data = '{ "id":null, "error": {"message":"denied"}, "authorization": ["Basic private"] }'
+  const api = await loadApi({
+    fetch: async () =>
+      new Response(sseBody('data: {"method":"progress"}\n\n' + 'data: ' + data + '\n\n'), {
+        headers: { 'Content-Type': 'text/event-stream' },
+      }),
+  })
+  await assert.rejects(api.searchBrowserWeb('query', signal()), (error) => {
+    assert.equal(error.responseDetails.body, data.replace('"Basic private"', '"***"'))
+    assert.equal(error.responseDetails.status, undefined)
+    return true
+  })
+})
+
 test('a browser fetch failure names the operation and URL without blaming the model', async () => {
   for (const target of ['gateway', 'exa']) {
     const api = await loadApi({
@@ -352,6 +448,20 @@ test('search failures preserve HTTP status and redact service error bodies and U
     message:
       '读取网页失败：服务返回 HTTP 429。请求地址：https://r.jina.ai/https://example.com/page',
   })
+  await assert.rejects(
+    api.fetchBrowserUrl('https://example.com/page?token=secret', signal()),
+    (error) => {
+      assert.deepEqual(
+        { ...error.responseDetails },
+        {
+          status: 429,
+          body: '{"error":{"message":"specific provider failure"}}',
+          truncated: false,
+        }
+      )
+      return true
+    }
+  )
 })
 
 test('parallel search calls show the actual failure once per reply and preserve every tool result', async () => {
@@ -409,9 +519,15 @@ test('parallel search calls show the actual failure once per reply and preserve 
     assert.equal(searches, reply + 1)
     assert.equal(text.match(/联网搜索（Exa）失败：服务返回 HTTP 429/g).length, 1)
     assert.doesNotMatch(text, /当前模型不支持联网搜索|actual upstream limit/)
+    assert.equal(
+      events.find((event) => event.content_block?.responseDetails).content_block.responseDetails
+        .body,
+      '{"error":{"message":"actual upstream limit"}}'
+    )
     assert.doesNotMatch(text, /Search unavailable for this turn/)
     const results = histories[reply].filter((m) => m.role === 'tool')
     assert.equal(results.length, 2)
+    assert.ok(results.every((m) => !m.content.includes('actual upstream limit')))
     assert.ok(results.every((m) => JSON.parse(m.content).error.includes('HTTP 429')))
     assert.equal(events.filter((e) => e.type === 'message_stop').length, 1)
   }

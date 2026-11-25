@@ -8,6 +8,7 @@ import {
   useSettings,
 } from '../settings.js'
 import { readMessageEvent } from './parseEvent.js'
+import type { ResponseDetails } from './responseDetails.js'
 import { readServerSentEvents } from './sse.js'
 import type {
   ApiErrorBody,
@@ -40,7 +41,8 @@ export class ApiError extends Error {
   constructor(
     readonly kind: ApiErrorKind,
     message: string | TranslationMessage,
-    readonly status?: number
+    readonly status?: number,
+    readonly responseDetails?: ResponseDetails
   ) {
     super(typeof message === 'string' ? message : translate(message.key, message.params))
     this.name = 'ApiError'
@@ -57,7 +59,8 @@ const isErrorBody = (value: unknown): value is ApiErrorBody =>
 const readErrorResponse = async (
   response: Response,
   kind: 'http' | 'protocol' = 'http',
-  fallback = response.statusText
+  fallback = response.statusText,
+  capture?: (body: string, status: number) => ResponseDetails | undefined
 ): Promise<ApiError> => {
   const text = await response.text().catch(() => '')
   let message = text || fallback
@@ -69,10 +72,14 @@ const readErrorResponse = async (
   } catch {
     // 非 JSON 响应体直接展示原文
   }
-  return new ApiError(kind, message, response.status)
+  return new ApiError(kind, message, response.status, capture?.(text, response.status))
 }
 
-export const request = async (url: string, init: RequestInit): Promise<Response> => {
+export const request = async (
+  url: string,
+  init: RequestInit,
+  capture?: (body: string, status: number) => ResponseDetails | undefined
+): Promise<Response> => {
   let response: Response
   try {
     response = await fetch(url, init)
@@ -83,7 +90,7 @@ export const request = async (url: string, init: RequestInit): Promise<Response>
     throw new ApiError('network', error instanceof Error ? error.message : String(error))
   }
   if (!response.ok) {
-    throw await readErrorResponse(response)
+    throw await readErrorResponse(response, 'http', response.statusText, capture)
   }
   return response
 }

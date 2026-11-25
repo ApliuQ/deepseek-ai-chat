@@ -82,6 +82,8 @@ export const en = {
   customExaSearch: 'Web search (Exa)',
   customReadWebpage: 'Read webpage',
   customRequestFailed: '{operation} failed: {reason}. Request URL: {url}',
+  customResponseDetails: 'Response details',
+  customResponseTruncated: 'Response truncated',
   customRequestUnknownUrl: 'invalid address',
   customRequestHttpReason: 'the service returned HTTP {status}',
   customRequestNetworkReason:
