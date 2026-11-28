@@ -430,10 +430,10 @@ test('search is off by default and search rounds are bounded even if the model k
   const events = await collect(
     api.streamOpenaiMessage('https://gateway.test/v1', 'key', await makeRequest(api), signal())
   )
-  assert.equal(searches, 10)
-  assert.equal(completions, 11)
+  assert.equal(searches, 30)
+  assert.equal(completions, 31)
   assert.equal(finalBody.tool_choice, 'none')
   assert.equal(finalBody.tools, undefined)
-  assert.match(text(events), /搜索工具调用轮数超过上限（10 轮）/)
+  assert.match(text(events), /搜索工具调用轮数超过上限（30 轮）/)
   assert.equal(events.at(-1).type, 'message_stop')
 })

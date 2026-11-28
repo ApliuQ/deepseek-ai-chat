@@ -12,7 +12,7 @@ import type { WebSearchResult } from './types.js'
 
 import type { OpenaiRequest } from './openai.js'
 
-const SEARCH_TOOL_ROUNDS = 10
+const SEARCH_TOOL_ROUNDS = 30
 
 const record = (value: unknown): Record<string, unknown> | null =>
   typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null
